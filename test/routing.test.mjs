@@ -3777,6 +3777,56 @@ test("API forwarder supports all DeepSeek V4 models and normalizes thinking", as
   }
 });
 
+test("API forwarder restores DeepSeek thinking parts as reasoning_content", async () => {
+  const upstreamRequests = [];
+  const upstream = await mockServer(async (request, response) => {
+    upstreamRequests.push(await bodyJson(request));
+    json(response, 200, { choices: [] });
+  });
+  const forwarderPort = await openPort();
+  const forwarder = run("api-forwarder.mjs", {
+    CODEX_ROUTER_API_PORT: String(forwarderPort),
+    DEEPSEEK_API_BASE_URL: `http://127.0.0.1:${upstream.port}`,
+    DEEPSEEK_API_KEY: "TEST_DEEPSEEK_API_KEY",
+    CODEX_ROUTER_QUIET: "1",
+  });
+
+  try {
+    await waitFor(`http://127.0.0.1:${forwarderPort}/health`, forwarder, {
+      Authorization: `Bearer ${INTERNAL_KEY}`,
+    });
+    const response = await fetch(`http://127.0.0.1:${forwarderPort}/v1/chat/completions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${INTERNAL_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "deepseek-v4-flash",
+        messages: [
+          { role: "user", content: "first" },
+          {
+            role: "assistant",
+            content: [
+              { type: "thinking", text: "private plan" },
+              { type: "text", text: "visible answer" },
+            ],
+          },
+          { role: "user", content: "follow up" },
+        ],
+      }),
+    });
+    assert.equal(response.status, 200);
+    const assistant = upstreamRequests[0].messages[1];
+    assert.equal(assistant.reasoning_content, "private plan");
+    assert.deepEqual(assistant.content, [{ type: "text", text: "visible answer" }]);
+    assert.deepEqual(upstreamRequests[0].thinking, { type: "enabled" });
+  } finally {
+    await stopChild(forwarder);
+    await closeServer(upstream.server);
+  }
+});
+
 test("API forwarder downgrades forced tool choices for DeepSeek thinking models", async () => {
   const upstreamRequests = [];
   const upstream = await mockServer(async (request, response) => {
@@ -9088,6 +9138,55 @@ test("a plain follow-up after a thinking turn replays its reasoning", async () =
     await stopChild(router);
     await closeServer(gateway.server);
     rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+test("direct DeepSeek reasoning replay stays out of visible assistant content", async () => {
+  const gatewayBodies = [];
+  const gateway = await mockServer(async (request, response) => {
+    gatewayBodies.push(await bodyJson(request));
+    json(response, 200, { output: [{ type: "message", role: "assistant", content: "ok" }] });
+  });
+  const routerPort = await openPort();
+  const router = run("router.mjs", {
+    CODEX_ROUTER_PORT: String(routerPort),
+    CODEX_ROUTER_GATEWAY_BASE_URL: `http://127.0.0.1:${gateway.port}/v1`,
+    CODEX_ROUTER_QUIET: "1",
+  });
+  const input = [
+    { type: "message", role: "user", content: [{ type: "input_text", text: "who wrote Dune?" }] },
+    {
+      type: "reasoning",
+      id: "rs_direct_replay",
+      summary: [{ type: "summary_text", text: "Dune is Frank Herbert's, published 1965." }],
+      content: null,
+    },
+    {
+      type: "message",
+      role: "assistant",
+      content: [{ type: "output_text", text: "Frank Herbert." }],
+    },
+    { type: "message", role: "user", content: [{ type: "input_text", text: "and the sequel?" }] },
+  ];
+
+  try {
+    await waitFor(`${routerBase(routerPort)}/models`, router);
+    const response = await fetch(`${routerBase(routerPort)}/responses`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "deepseek/deepseek-v4-flash", stream: false, input }),
+    });
+    assert.equal(response.status, 200, await response.text());
+    const answer = gatewayBodies[0].input.find(
+      (item) => item?.type === "message" && item.role === "assistant",
+    );
+    assert.deepEqual(answer.content, [
+      { type: "thinking", text: "Dune is Frank Herbert's, published 1965." },
+      { type: "output_text", text: "Frank Herbert." },
+    ]);
+  } finally {
+    await stopChild(router);
+    await closeServer(gateway.server);
   }
 });
 

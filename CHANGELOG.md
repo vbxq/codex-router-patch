@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **DeepSeek thinking replays no longer leak into visible assistant text.**
+  Reasoning carried across the Responses-to-Chat bridge now stays a structured
+  `thinking` part until the DeepSeek adapter restores it as `reasoning_content`,
+  keeping private replay data out of the visible answer and its next turn.
+
 - **Command Code no longer rejects a routed turn over a long tool name or a
   recursive schema.** A Codex turn carrying a client tool such as
   `mcp__openai_api_key_local_confirmation__confirm_openai_api_key_local_destination`

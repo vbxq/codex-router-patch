@@ -242,7 +242,7 @@ function coalesceAssistantMessages(messages) {
   return coalesced;
 }
 
-function restoreGlmReasoningContent(messages) {
+function restoreThinkingReasoningContent(messages) {
   if (!Array.isArray(messages)) return messages;
   return messages.map((message) => {
     if (message?.role !== "assistant" || !Array.isArray(message.content)) return message;
@@ -861,6 +861,11 @@ function normalizeBody(buffer, contentType, route) {
     delete payload.thinking;
   } else if (model.requestProfile === "deepseek-thinking") {
     payload.thinking = { type: "enabled" };
+    // LiteLLM's Responses -> Chat bridge preserves `thinking` content parts,
+    // but DeepSeek expects the replay on `reasoning_content`. Keep the private
+    // text out of the visible `content` channel before the request leaves the
+    // router.
+    payload.messages = restoreThinkingReasoningContent(payload.messages);
     payload.reasoning_effort = deepSeekEffort(payload.reasoning_effort);
     delete payload.temperature;
     delete payload.top_p;
@@ -950,7 +955,7 @@ function normalizeBody(buffer, contentType, route) {
     }
   } else if (model.requestProfile === "glm-thinking") {
     payload.thinking = { type: "enabled", clear_thinking: false };
-    payload.messages = restoreGlmReasoningContent(payload.messages);
+    payload.messages = restoreThinkingReasoningContent(payload.messages);
     // Each GLM entry declares exactly the tiers Z.ai documents for it, and the
     // requested effort is clamped onto them. Models whose registry entry offers
     // a single level (GLM-5-Turbo, GLM-4.7) do not support the parameter at

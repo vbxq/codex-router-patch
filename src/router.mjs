@@ -1952,9 +1952,10 @@ async function readVisionEvidence({ url, engine, nativeCall, effort, question, k
 // input items entirely (`_transform_responses_api_input_item_to_chat_completion_message`
 // returns nothing for an item whose `content` is null, which is the shape
 // Codex stores), so the reasoning text never reaches the provider at all.
-// Carry each run of reasoning items onto the assistant turn it belongs to, and
-// the translation keeps it as that message's content. In-place, no-op when
-// there is nothing to carry.
+// Carry each run of reasoning items onto the assistant turn it belongs to. The
+// normal path uses an output_text part; native-thinking chat profiles use a
+// structured thinking part that the final provider adapter restores to its
+// private reasoning field. In-place, no-op when there is nothing to carry.
 //
 // Every assistant turn needs covering, not only the ones that call a tool.
 // This used to carry the reasoning solely into a following `function_call` or
@@ -3018,12 +3019,14 @@ async function buildRoutedRequest({ request, payload, route, agedInput }) {
   // having quietly replaced the prompt with its own letters.
   const input = Array.isArray(bridged) ? [...bridged] : bridged;
   // Thinking chat providers need the assistant's reasoning replayed, but
-  // LiteLLM drops Responses `reasoning` input items. Generic providers keep
-  // the established visible-content carry used for DeepSeek. GLM's native
-  // preserved-thinking contract needs reasoning kept structurally separate so
-  // the API forwarder can restore it as `reasoning_content` before Z.ai.
+  // LiteLLM drops Responses `reasoning` input items. Keep the replay as a
+  // structured `thinking` content part for providers whose final hop can
+  // restore it to the provider-native reasoning field. Putting it in
+  // `output_text` makes private reasoning indistinguishable from visible
+  // prose and lets it leak back into the next answer.
   carryReasoningThroughInput(input, {
-    nativeThinking: chatCompletionsProvider && route.requestProfile === "glm-thinking",
+    nativeThinking: chatCompletionsProvider &&
+      ["deepseek-thinking", "glm-thinking"].includes(route.requestProfile),
   });
   // Models marked requiresTrailingUserTurn reject requests ending with a model
   // turn. Pop trailing assistant messages, reasoning, or subagent outputs.
