@@ -226,15 +226,18 @@ const BOUNDED_TOOL_NAME_LENGTH = 64;
 export function chatProviderToolSurface(
   tools,
   providerId,
-  { input, toolChoice } = {},
+  { input, toolChoice, maxNameLength } = {},
 ) {
   const merged = mergeCodexAppTools(tools);
   if (providerId !== "groq") {
+    const boundedNameLength = BOUNDED_TOOL_NAME_PROVIDERS.has(providerId)
+      ? BOUNDED_TOOL_NAME_LENGTH
+      : Number.isInteger(maxNameLength) && maxNameLength >= 16
+        ? maxNameLength
+        : undefined;
     return flattenNamespaceTools(
       merged.tools,
-      BOUNDED_TOOL_NAME_PROVIDERS.has(providerId)
-        ? { maxNameLength: BOUNDED_TOOL_NAME_LENGTH }
-        : {},
+      boundedNameLength === undefined ? {} : { maxNameLength: boundedNameLength },
     );
   }
 

@@ -913,6 +913,24 @@ function needsConsoleGoResponsesToolCompatibility(route) {
   return providerForModel(route)?.id === "opencode-go-responses";
 }
 
+// OpenRouter's Meta Muse Spark routes reject provider-facing function names
+// longer than 64 characters. Keep the alias boundary on the measured Muse
+// routes only: other OpenRouter models retain their native names until their
+// own upstream establishes the same contract.
+const OPENROUTER_MUSE_SPARK_MODELS = new Set([
+  "meta/muse-spark-1.2",
+  "meta/muse-spark-1.2-contributor",
+  "meta/muse-spark-1.3",
+  "meta/muse-spark-1.3-contributor",
+]);
+
+function needsOpenRouterMuseToolNameCompatibility(route) {
+  return (
+    providerForModel(route)?.id === "openrouter" &&
+    OPENROUTER_MUSE_SPARK_MODELS.has(route.upstreamModel)
+  );
+}
+
 // DeepSeek's native Responses endpoint accepts ordinary function tools, not
 // Codex's namespace/custom/deferred-search discriminators. Keep this scoped to
 // the native API; reseller Chat routes use their own protocol adapters.
@@ -3105,6 +3123,9 @@ async function buildRoutedRequest({ request, payload, route, agedInput }) {
     const flattened = chatProviderToolSurface(tools, provider?.id, {
       input,
       toolChoice: payload.tool_choice,
+      ...(needsOpenRouterMuseToolNameCompatibility(route)
+        ? { maxNameLength: 64 }
+        : {}),
     });
     namespacesFlattened = flattened.flattened;
     flattenedNamespaces = flattened.namespaces;

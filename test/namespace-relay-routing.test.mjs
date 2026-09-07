@@ -207,6 +207,23 @@ function routedRequestPayload(stream = true, model = "opencode-go/deepseek-v4-fl
   };
 }
 
+const OPENROUTER_MUSE_LONG_TOOL =
+  "mcp__openai_api_key_local_confirmation__confirm_openai_api_key_local_destination";
+
+function openRouterMuseRequestPayload(
+  stream = true,
+  model = "openrouter/muse-spark-1.3-contributor",
+) {
+  const payload = routedRequestPayload(stream, model);
+  payload.tools.push({
+    type: "function",
+    name: OPENROUTER_MUSE_LONG_TOOL,
+    description: "Long OpenRouter Muse tool fixture.",
+    parameters: { type: "object", properties: {}, additionalProperties: false },
+  });
+  return payload;
+}
+
 // Reproduce the reported Codex 0.149.1 custom-provider shape: namespace tools
 // are already flat when they reach the router, while canonical turn metadata
 // still carries the native identity Codex will use for dispatch.
@@ -1791,6 +1808,26 @@ const GO_LONG_TOOL = "list_repository_pull_request_review_comments_for_branch";
 const GO_DISCOVERED_NAMESPACE = "mcp__calendar_connector_with_a_long_namespace";
 const GO_DISCOVERED_TOOL = "delete_an_event_and_notify_every_participant";
 const GO_PATCH = "*** Begin Patch\n*** End Patch";
+
+test("OpenRouter Muse Spark bounds long provider-facing function names", async () => {
+  for (const stream of [true, false]) {
+    const result = await scenario(stream, {
+      model: "openrouter/muse-spark-1.3-contributor",
+      requestPayload: openRouterMuseRequestPayload,
+      sseBody: () => [sseEvent({ type: "response.completed" }), "data: [DONE]\\n\\n"].join(""),
+      jsonBody: () => ({ id: "resp-openrouter-muse", output: [] }),
+    });
+    assert.equal(result.gatewayBodies.length, 1);
+    const outgoing = result.gatewayBodies[0];
+    assert.equal(outgoing.model, "openrouter-muse-spark-1-3-contributor");
+    const longTool = outgoing.tools.find(
+      (tool) => tool.description === "Long OpenRouter Muse tool fixture.",
+    );
+    assert.ok(longTool);
+    assert.ok(longTool.name.length <= 64);
+    assert.notEqual(longTool.name, OPENROUTER_MUSE_LONG_TOOL);
+  }
+});
 
 function goCompatibilityRequestPayload(
   stream = true,

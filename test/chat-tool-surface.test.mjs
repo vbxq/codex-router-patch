@@ -407,3 +407,20 @@ test("a non-Command Code chat provider keeps the unbounded 80-character name", (
     "only Command Code opts into the 64-character bound",
   );
 });
+
+test("an explicitly bounded OpenRouter surface aliases long tool names", () => {
+  const routed = chatProviderToolSurface(commandCodeSurface(), "openrouter", {
+    maxNameLength: 64,
+  });
+  const alias = routed.tools.find((tool) => tool.name !== "codex_app__create_thread");
+  assert.ok(alias);
+  assert.ok(alias.name.length <= 64);
+  assert.notEqual(alias.name, COMMAND_CODE_LONG_TOOL);
+  const restored = rewriteNamespaceResponsePayload(
+    {
+      output: [{ type: "function_call", name: alias.name, arguments: "{}" }],
+    },
+    buildNamespaceLookups(routed.namespaces),
+  );
+  assert.equal(restored.output[0].name, COMMAND_CODE_LONG_TOOL);
+});
