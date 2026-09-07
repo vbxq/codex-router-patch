@@ -11164,6 +11164,82 @@ test("API forwarder maps HY4's truthful Codex effort menus onto relay controls",
   }
 });
 
+test("API forwarder adds Nous Portal attribution tags to free model requests", async () => {
+  const upstreamRequests = [];
+  const upstream = await mockServer(async (request, response) => {
+    upstreamRequests.push({ headers: request.headers, body: await bodyJson(request) });
+    json(response, 200, { choices: [] });
+  });
+  const forwarderPort = await openPort();
+  const forwarder = run("api-forwarder.mjs", {
+    CODEX_ROUTER_API_PORT: String(forwarderPort),
+    NOUS_API_BASE_URL: `http://127.0.0.1:${upstream.port}`,
+    NOUS_API_KEY: "TEST_NOUS_FREE_TAGS_KEY",
+    CODEX_ROUTER_QUIET: "1",
+  });
+
+  try {
+    await waitFor(`http://127.0.0.1:${forwarderPort}/health`, forwarder, {
+      Authorization: `Bearer ${INTERNAL_KEY}`,
+    });
+    const cases = [
+      ["nousresearch-longcat-2-0-free", "meituan/longcat-2.0:free"],
+      ["nousresearch-laguna-s-2-1-free", "poolside/laguna-s-2.1:free"],
+      ["nousresearch-laguna-xs-2-1-free", "poolside/laguna-xs-2.1:free"],
+      ["nousresearch-step-3-7-flash-free", "stepfun/step-3.7-flash:free"],
+      ["nousresearch-solar-pro4-free", "upstage/solar-pro4:free"],
+    ];
+    for (const [gatewayModel, upstreamModel] of cases) {
+      const response = await fetch(
+        `http://127.0.0.1:${forwarderPort}/v1/chat/completions`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${INTERNAL_KEY}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            model: gatewayModel,
+            messages: [{ role: "user", content: "test" }],
+          }),
+        },
+      );
+      assert.equal(response.status, 200);
+      const request = upstreamRequests.at(-1);
+      assert.equal(request.body.model, upstreamModel);
+      assert.ok(Array.isArray(request.body.tags));
+      assert.ok(request.body.tags.some((tag) => /^user=/.test(tag)));
+      assert.ok(request.body.tags.some((tag) => /^product=/.test(tag)));
+    }
+
+    const supplied = await fetch(
+      `http://127.0.0.1:${forwarderPort}/v1/chat/completions`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${INTERNAL_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "nousresearch-longcat-2-0-free",
+          tags: ["user=caller", "custom=keep"],
+          messages: [{ role: "user", content: "test" }],
+        }),
+      },
+    );
+    assert.equal(supplied.status, 200);
+    assert.deepEqual(upstreamRequests.at(-1).body.tags, [
+      "user=caller",
+      "custom=keep",
+      "product=codex-router",
+      "client=codex-router-v0.5.1",
+    ]);
+  } finally {
+    await stopChild(forwarder);
+    await closeServer(upstream.server);
+  }
+});
+
 // The direct-proven GLM-5.3-Flash routes reject an off-ladder reasoning_effort with
 // HTTP 400 rather than ignoring it -- its upstream answers "[1210] This model
 // always engages in thinking and cannot be disabled; please use low, high, or max".

@@ -125,7 +125,6 @@ test("provider registry exposes configured API and OAuth model families", () => 
       "nousresearch/grok-4.6",
       "nousresearch/hermes-4-405b",
       "nousresearch/hermes-4-70b",
-      "nousresearch/hy3-free",
       "nousresearch/tencent/hy4-preview",
       "nousresearch/kat-coder-pro-v2.5",
       "nousresearch/kimi-k2.7-code",
@@ -1443,7 +1442,6 @@ test("Nous Research free models are tagged isFree, Hermes 4 is not", () => {
     "nousresearch/laguna-s-2.1-free",
     "nousresearch/laguna-xs-2.1-free",
     "nousresearch/step-3.7-flash-free",
-    "nousresearch/hy3-free",
     "nousresearch/solar-pro4-free",
   ];
   for (const slug of freeModels) {

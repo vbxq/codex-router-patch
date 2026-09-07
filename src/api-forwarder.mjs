@@ -658,6 +658,25 @@ function stripEmptyTools(payload) {
   return changed;
 }
 
+// Nous Portal's OpenAI-compatible endpoint validates attribution tags on a
+// subset of its routed catalog (including several `:free` models). The public
+// OpenAI shape does not require them, so callers such as LiteLLM omit them and
+// Nous answers 400 "missing tags" or "missing user tag". Keep caller-supplied
+// tags, but guarantee the Portal's required user tag and stable router
+// attribution for every Nous chat request.
+function ensureNousPortalTags(payload, provider) {
+  if (provider?.id !== "nousresearch") return;
+  const tags = Array.isArray(payload.tags)
+    ? payload.tags.filter((tag) => typeof tag === "string" && tag.length > 0)
+    : [];
+  if (!tags.some((tag) => tag.startsWith("user="))) tags.push("user=codex-router");
+  if (!tags.some((tag) => tag.startsWith("product="))) tags.push("product=codex-router");
+  if (!tags.some((tag) => tag.startsWith("client="))) {
+    tags.push(`client=codex-router-v${VERSION}`);
+  }
+  payload.tags = tags;
+}
+
 function normalizeBody(buffer, contentType, route) {
   if (!buffer.length || !String(contentType || "").includes("application/json")) {
     const error = new Error("API-provider requests require a JSON body.");
@@ -712,6 +731,7 @@ function normalizeBody(buffer, contentType, route) {
   }
 
   payload.model = model.upstreamModel;
+  if (route === "/chat/completions") ensureNousPortalTags(payload, provider);
   // Embeddings have their own wire contract. Keep every provider-specific
   // input field unchanged and never send the body through a chat adapter.
   if (route === "/embeddings") {
