@@ -685,16 +685,21 @@ function normalizeBody(buffer, contentType, route) {
     error.status = 400;
     throw error;
   }
+  const nativeResponses = provider.protocol === "openai-responses";
+  // DeepSeek exposes both surfaces. The router uses Responses natively; keep
+  // Chat Completions available for older direct integrations without routing
+  // the Codex turn through that translation bridge again.
+  const chatCompatibility = nativeResponses && route === "/chat/completions";
   const expectedRoute =
     provider.protocol === "anthropic"
       ? "/messages"
-      : provider.protocol === "openai-responses"
+      : nativeResponses
         ? "/responses"
         : "/chat/completions";
   if (
     route === "/embeddings"
       ? !supportsOpenAIModelEndpoint(route, { model, provider })
-      : route !== expectedRoute ||
+      : (!chatCompatibility && route !== expectedRoute) ||
         (model.supportedEndpoints !== undefined &&
           !supportsOpenAIModelEndpoint(route, { model, provider }))
   ) {
@@ -723,7 +728,7 @@ function normalizeBody(buffer, contentType, route) {
   // Responses providers get one checked boundary here. The request remains a
   // Responses request, but legacy aliases are normalized before any provider
   // sees it and the original payload remains available for retries.
-  if (provider.protocol === "openai-responses") {
+  if (nativeResponses && route === "/responses") {
     payload = normalizeOpenAIRequest(payload);
   }
 
@@ -822,7 +827,7 @@ function normalizeBody(buffer, contentType, route) {
   // the bridge lives. Say that in the model's own turn instead of dropping the
   // part or letting the provider refuse the whole conversation.
   if (!supportsImageInput(model)) {
-    const textPartType = provider.protocol === "openai-responses" ? "input_text" : "text";
+    const textPartType = nativeResponses && route === "/responses" ? "input_text" : "text";
     const reason =
       `${model.displayName || model.gatewayModel} cannot read images, and an image sent ` +
       "straight to the gateway skips the router's vision bridge";
@@ -860,28 +865,51 @@ function normalizeBody(buffer, contentType, route) {
     else delete payload.reasoning_effort;
     delete payload.thinking;
   } else if (model.requestProfile === "deepseek-thinking") {
-    payload.thinking = { type: "enabled" };
-    // LiteLLM's Responses -> Chat bridge preserves `thinking` content parts,
-    // but DeepSeek expects the replay on `reasoning_content`. Keep the private
-    // text out of the visible `content` channel before the request leaves the
-    // router.
-    payload.messages = restoreThinkingReasoningContent(payload.messages);
-    payload.reasoning_effort = deepSeekEffort(payload.reasoning_effort);
-    delete payload.temperature;
-    delete payload.top_p;
-    delete payload.presence_penalty;
-    delete payload.frequency_penalty;
-    // DeepSeek rejects forced tool choices while thinking is enabled
-    // ("Thinking mode does not support this tool_choice"); downgrade to auto so
-    // tool calls stay available. Codex sends "required" for the compatibility
-    // probe and a function object for the subagent payload relay, so without
-    // this both tool calling and routed subagents fail on every thinking model.
-    if (payload.tool_choice !== undefined && payload.tool_choice !== "none") {
-      payload.tool_choice = "auto";
+    if (nativeResponses && route === "/responses") {
+      // DeepSeek's native Responses endpoint owns the reasoning envelope. Do
+      // not synthesize Chat Completions `thinking` or move private text into a
+      // visible message; that Chat->Responses bridge was the source of the
+      // duplicate lifecycle observed by Codex.
+      const reasoning = payload.reasoning &&
+        typeof payload.reasoning === "object" &&
+        !Array.isArray(payload.reasoning)
+        ? payload.reasoning
+        : {};
+      payload.reasoning = {
+        ...reasoning,
+        effort: deepSeekEffort(reasoning.effort ?? payload.reasoning_effort),
+      };
+      delete payload.reasoning_effort;
+      delete payload.thinking;
+      // The native endpoint still rejects forced tool choices in thinking mode
+      // ("Thinking mode does not support this tool_choice").
+      if (payload.tool_choice !== undefined && payload.tool_choice !== "none") {
+        payload.tool_choice = "auto";
+      }
+    } else {
+      // Legacy direct callers can continue using DeepSeek's Chat surface. This
+      // compatibility branch is intentionally separate from the router's
+      // native Responses path above.
+      payload.thinking = { type: "enabled" };
+      payload.messages = restoreThinkingReasoningContent(payload.messages);
+      payload.reasoning_effort = deepSeekEffort(payload.reasoning_effort);
+      delete payload.temperature;
+      delete payload.top_p;
+      delete payload.presence_penalty;
+      delete payload.frequency_penalty;
+      if (payload.tool_choice !== undefined && payload.tool_choice !== "none") {
+        payload.tool_choice = "auto";
+      }
     }
   } else if (model.requestProfile === "deepseek-nonthinking") {
-    payload.thinking = { type: "disabled" };
-    delete payload.reasoning_effort;
+    if (nativeResponses && route === "/responses") {
+      payload.reasoning = { effort: "none" };
+      delete payload.reasoning_effort;
+      delete payload.thinking;
+    } else {
+      payload.thinking = { type: "disabled" };
+      delete payload.reasoning_effort;
+    }
   } else if (
     ["ollama-cloud", "ollama-cloud-auto-tool-choice"].includes(model.requestProfile)
   ) {
@@ -1086,7 +1114,7 @@ function normalizeBody(buffer, contentType, route) {
     provider,
     endpoint,
     payload,
-    responseAdapter: provider.protocol === "openai-responses" ? "responses" : undefined,
+    responseAdapter: nativeResponses && route === "/responses" ? "responses" : undefined,
   };
 }
 

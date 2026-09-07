@@ -913,6 +913,14 @@ function needsConsoleGoResponsesToolCompatibility(route) {
   return providerForModel(route)?.id === "opencode-go-responses";
 }
 
+// DeepSeek's native Responses endpoint accepts ordinary function tools, not
+// Codex's namespace/custom/deferred-search discriminators. Keep this scoped to
+// the native API; reseller Chat routes use their own protocol adapters.
+function needsDeepSeekResponsesToolCompatibility(route) {
+  const provider = providerForModel(route);
+  return provider?.id === "deepseek" && provider.protocol === "openai-responses";
+}
+
 function rejectsWebSearchOptions(route) {
   return ["fireworks", "opencode-go"].includes(providerForModel(route)?.id);
 }
@@ -2001,6 +2009,31 @@ function carryReasoningThroughInput(input, { nativeThinking = false } = {}) {
   }
 }
 
+// DeepSeek's Responses API accepts a reasoning item only when its private text
+// is in `content` as `reasoning_text`; its OpenAI-style `summary` and encrypted
+// fields are not part of the input schema. Convert Codex's stored item without
+// ever placing that text in an assistant `output_text` part. Empty encrypted-
+// only items are omitted because there is no supported native representation.
+function normalizeDeepSeekReasoningInput(input) {
+  if (!Array.isArray(input)) return input;
+  const normalized = [];
+  for (const item of input) {
+    if (item?.type !== "reasoning") {
+      normalized.push(item);
+      continue;
+    }
+    const text = reasoningItemText(item);
+    if (!text) continue;
+    const { summary: _summary, encrypted_content: _encrypted, ...rest } = item;
+    normalized.push({
+      ...rest,
+      content: [{ type: "reasoning_text", text }],
+    });
+  }
+  input.splice(0, input.length, ...normalized);
+  return input;
+}
+
 // A trailing model turn is a destructive rewrite: it discards part of the
 // caller's conversation. Only Google's own provider gets that behavior from
 // identity. Resellers and custom endpoints must opt in per model after their
@@ -2503,6 +2536,10 @@ async function summarizeWith(
     route,
     request,
   );
+  const compactionInput = Array.isArray(bridged) ? [...bridged] : bridged;
+  if (needsDeepSeekResponsesToolCompatibility(route) && Array.isArray(compactionInput)) {
+    normalizeDeepSeekReasoningInput(compactionInput);
+  }
   const body = {
     ...payload,
     model: route.gatewayModel,
@@ -2512,7 +2549,7 @@ async function summarizeWith(
     // rather than sent redundantly.
     tools: [],
     input: [
-      ...bridged,
+      ...(Array.isArray(compactionInput) ? compactionInput : [compactionInput]),
       messageItem(prepared.catalogText),
       messageItem(COMPACTION_PROMPT),
     ],
@@ -2969,6 +3006,7 @@ async function buildRoutedRequest({ request, payload, route, agedInput }) {
   const provider = providerForModel(route);
   const chatCompletionsProvider = provider?.protocol !== "openai-responses";
   const consoleGoResponsesCompatibility = needsConsoleGoResponsesToolCompatibility(route);
+  const deepSeekResponsesCompatibility = needsDeepSeekResponsesToolCompatibility(route);
   const compatibleInput = zenFreeCompatibleInput(
     normalizeProviderAppToolOutputs(agedInput),
     route,
@@ -3024,10 +3062,14 @@ async function buildRoutedRequest({ request, payload, route, agedInput }) {
   // restore it to the provider-native reasoning field. Putting it in
   // `output_text` makes private reasoning indistinguishable from visible
   // prose and lets it leak back into the next answer.
-  carryReasoningThroughInput(input, {
-    nativeThinking: chatCompletionsProvider &&
-      ["deepseek-thinking", "glm-thinking"].includes(route.requestProfile),
-  });
+  if (deepSeekResponsesCompatibility) {
+    normalizeDeepSeekReasoningInput(input);
+  } else {
+    carryReasoningThroughInput(input, {
+      nativeThinking: chatCompletionsProvider &&
+        ["deepseek-thinking", "glm-thinking"].includes(route.requestProfile),
+    });
+  }
   // Models marked requiresTrailingUserTurn reject requests ending with a model
   // turn. Pop trailing assistant messages, reasoning, or subagent outputs.
   if (requiresTrailingUserTurn(route)) {
@@ -3069,11 +3111,14 @@ async function buildRoutedRequest({ request, payload, route, agedInput }) {
     if (namespacesFlattened) {
       tools = flattened.tools;
     }
-  } else if (consoleGoResponsesCompatibility) {
-    // Console Go exposes a Responses endpoint but rejects the native tool
-    // discriminators Codex sends. Translate only its tool boundary; unlike the
-    // chat-completions branch, do not inject the deferred codex_app snapshot.
-    const flattened = flattenNamespaceTools(tools, { maxNameLength: 64 });
+  } else if (consoleGoResponsesCompatibility || deepSeekResponsesCompatibility) {
+    // These Responses endpoints expose the ordinary function-tool subset and
+    // reject Codex's namespace/custom/deferred-search discriminators. Translate
+    // only that tool boundary; unlike the Chat branch, do not inject a deferred
+    // codex_app snapshot. DeepSeek documents a 128-character function limit.
+    const flattened = flattenNamespaceTools(tools, {
+      maxNameLength: deepSeekResponsesCompatibility ? 128 : 64,
+    });
     namespacesFlattened = flattened.flattened;
     flattenedNamespaces = flattened.namespaces;
     tools = flattened.tools;
@@ -3119,22 +3164,25 @@ async function buildRoutedRequest({ request, payload, route, agedInput }) {
   }
   let routedInput = input;
   let routedToolChoice = payload.tool_choice;
-  if (needsStrictOpenCodeToolCompatibility(route)) {
+  if (needsStrictOpenCodeToolCompatibility(route) || deepSeekResponsesCompatibility) {
     const customTools = bridgeCustomTools(
       tools,
       routedInput,
       flattenedNamespaces,
       routedToolChoice,
       undefined,
-      consoleGoResponsesCompatibility
-        ? { maxNameLength: 64, bridgeAll: true }
+      consoleGoResponsesCompatibility || deepSeekResponsesCompatibility
+        ? {
+            maxNameLength: deepSeekResponsesCompatibility ? 128 : 64,
+            bridgeAll: true,
+          }
         : undefined,
     );
     tools = customTools.tools;
     routedInput = customTools.input;
     routedToolChoice = customTools.toolChoice;
   }
-  if (chatCompletionsProvider || consoleGoResponsesCompatibility) {
+  if (chatCompletionsProvider || consoleGoResponsesCompatibility || deepSeekResponsesCompatibility) {
     let searchHistory;
     try {
       searchHistory = flattenToolSearchHistory(
@@ -3178,14 +3226,14 @@ async function buildRoutedRequest({ request, payload, route, agedInput }) {
   // the model copies the bare names out of its own transcript.
   if (namespacesFlattened) {
     routedInput = flattenNamespacedHistory(routedInput, flattenedNamespaces);
-    if (provider?.id === "groq") {
+    if (provider?.id === "groq" || deepSeekResponsesCompatibility) {
       routedToolChoice = flattenToolChoice(
         routedToolChoice,
         flattenedNamespaces,
       );
     }
   }
-  if (consoleGoResponsesCompatibility) {
+  if (consoleGoResponsesCompatibility || deepSeekResponsesCompatibility) {
     routedToolChoice = flattenToolChoice(routedToolChoice, flattenedNamespaces);
   }
   const routed = {

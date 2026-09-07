@@ -1058,6 +1058,16 @@ test("LiteLLM configuration is generated from every registry route", () => {
   assert.doesNotMatch(rendered, /ANTHROPIC_API_KEY|CLINE_API_KEY|DEEPSEEK_API_KEY|KIMI_API_KEY/);
 });
 
+test("DeepSeek API routes through the native Responses surface", () => {
+  assert.equal(PROVIDERS.get("deepseek").protocol, "openai-responses");
+  const rendered = renderLiteLlmConfig();
+  const start = rendered.indexOf('model_name: "deepseek-v4-flash"');
+  const end = rendered.indexOf("\n  - model_name:", start + 1);
+  const block = rendered.slice(start, end === -1 ? rendered.length : end);
+  assert.match(block, /model: "openai\/responses\/deepseek-v4-flash"/);
+  assert.doesNotMatch(block, /use_chat_completions_api/);
+});
+
 test("curated upgrade prompts point at listed generational successors", () => {
   // The modal only renders when the target slug is in the picker, so every
   // upgradeTo must resolve to a listed model (also enforced at load time).
@@ -1754,7 +1764,7 @@ test("local models route with Ollama's native protocol and a bounded context", (
     );
   }
   // Every non-local model keeps the forwarder path untouched.
-  assert.match(rendered, /model: "openai\/deepseek-v4-pro"/);
+  assert.match(rendered, /model: "openai\/responses\/deepseek-v4-pro"/);
 });
 
 test("a keyless provider's baseUrl override must stay on loopback", () => {

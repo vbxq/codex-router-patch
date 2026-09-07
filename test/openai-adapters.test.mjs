@@ -150,6 +150,28 @@ test("Responses stream keeps independent tool indices and usage across chunk bou
   assert.equal(output.at(-1).data, "[DONE]");
 });
 
+test("Responses stream restores namespaced calls in every lifecycle event", async () => {
+  const lookup = new Map([
+    ["collaboration__spawn_agent", { namespace: "collaboration", name: "spawn_agent" }],
+  ]);
+  const source = [
+    'data: {"type":"response.created","response":{"id":"resp-ns"}}\n\n',
+    'data: {"type":"response.output_item.added","output_index":0,"item":{"id":"call-item","type":"function_call","call_id":"call-ns","name":"collaboration__spawn_agent","arguments":"{}"}}\n\n',
+    'data: {"type":"response.output_item.done","output_index":0,"item":{"id":"call-item","type":"function_call","call_id":"call-ns","name":"collaboration__spawn_agent","arguments":"{}"}}\n\n',
+    'data: {"type":"response.completed","response":{"id":"resp-ns","status":"completed","output":[{"id":"call-item","type":"function_call","call_id":"call-ns","name":"collaboration__spawn_agent","arguments":"{}"}]}}\n\n',
+    "data: [DONE]\n\n",
+  ];
+  const output = frames(await transformText(createResponsesStreamTransform(lookup), source));
+  for (const frame of output.filter((entry) => entry.data && entry.data !== "[DONE]")) {
+    const items = [frame.data.item, ...(frame.data.response?.output || [])].filter(Boolean);
+    for (const item of items) {
+      if (item.type !== "function_call") continue;
+      assert.equal(item.name, "spawn_agent");
+      assert.equal(item.namespace, "collaboration");
+    }
+  }
+});
+
 test("Responses stream emits a terminal error instead of silently ending", async () => {
   const output = frames(await transformText(createResponsesStreamTransform(), [
     "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp-2\"}}\n\n",

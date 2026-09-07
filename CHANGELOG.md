@@ -2,10 +2,13 @@
 
 ## Unreleased
 
-- **DeepSeek thinking replays no longer leak into visible assistant text.**
-  Reasoning carried across the Responses-to-Chat bridge now stays a structured
-  `thinking` part until the DeepSeek adapter restores it as `reasoning_content`,
-  keeping private replay data out of the visible answer and its next turn.
+- **DeepSeek API routes through its native Responses protocol.**
+  Codex no longer sends DeepSeek turns through LiteLLM's Chat Completions to
+  Responses bridge, whose overlapping message lifecycle could duplicate a
+  visible turn and replay private reasoning as assistant text. Native
+  `reasoning_text` replay stays private, and namespace/custom tools are adapted
+  only at the provider boundary. Legacy direct `/chat/completions` callers
+  remain supported separately.
 
 - **Command Code no longer rejects a routed turn over a long tool name or a
   recursive schema.** A Codex turn carrying a client tool such as

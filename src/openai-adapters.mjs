@@ -445,12 +445,22 @@ function normalizeResponsesEvent(frame, state, flatToNative) {
     state.outputIndex = index + 1;
     if (!validOutputIndex(data.output_index)) data.output_index = index;
     
-    // Restore namespace for function call items
+    // Restore namespace for function call items. Apply the same mapping to the
+    // terminal item event below: restoring only `added` leaves Codex with a
+    // native opening followed by a flattened close, and the completed output
+    // then names a second logical call.
     if (item.type === "function_call" && flatToNative && flatToNative.size > 0) {
       const restored = restoreNamespacedFunctionCall(item, flatToNative);
       if (restored !== item) {
         data.item = restored;
       }
+    }
+  }
+  if (data.type === "response.output_item.done") {
+    const item = data.item && typeof data.item === "object" ? data.item : undefined;
+    if (item?.type === "function_call" && flatToNative && flatToNative.size > 0) {
+      const restored = restoreNamespacedFunctionCall(item, flatToNative);
+      if (restored !== item) data.item = restored;
     }
   }
   if (data.type === "response.function_call_arguments.delta" || data.type === "response.function_call_arguments.done") {
@@ -478,6 +488,9 @@ function normalizeResponsesEvent(frame, state, flatToNative) {
       return invalidStream(state, "The Responses completion used a different response ID.");
     }
     if (state.responseId && !data.response.id) data.response.id = state.responseId;
+    if (flatToNative && flatToNative.size > 0) {
+      data.response = normalizeResponseBody(data.response, flatToNative);
+    }
   }
   return serializeFrame(frame, data);
 }

@@ -3777,6 +3777,67 @@ test("API forwarder supports all DeepSeek V4 models and normalizes thinking", as
   }
 });
 
+test("API forwarder preserves DeepSeek's native Responses contract", async () => {
+  const upstreamRequests = [];
+  const upstream = await mockServer(async (request, response) => {
+    upstreamRequests.push({ url: request.url, body: await bodyJson(request) });
+    json(response, 200, {
+      id: "resp_native_deepseek",
+      object: "response",
+      status: "completed",
+      output: [],
+    });
+  });
+  const forwarderPort = await openPort();
+  const forwarder = run("api-forwarder.mjs", {
+    CODEX_ROUTER_API_PORT: String(forwarderPort),
+    DEEPSEEK_API_BASE_URL: `http://127.0.0.1:${upstream.port}`,
+    DEEPSEEK_API_KEY: "TEST_DEEPSEEK_API_KEY",
+    CODEX_ROUTER_QUIET: "1",
+  });
+
+  try {
+    await waitFor(`http://127.0.0.1:${forwarderPort}/health`, forwarder, {
+      Authorization: `Bearer ${INTERNAL_KEY}`,
+    });
+    const response = await fetch(`http://127.0.0.1:${forwarderPort}/v1/responses`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${INTERNAL_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "deepseek-v4-flash",
+        input: "call the tool",
+        reasoning_effort: "medium",
+        thinking: { type: "enabled" },
+        tool_choice: "required",
+        tools: [{
+          type: "function",
+          name: "probe",
+          parameters: { type: "object", properties: {} },
+        }],
+      }),
+    });
+    assert.equal(response.status, 200, await response.text());
+    const request = upstreamRequests[0];
+    assert.equal(request.url, "/responses");
+    assert.equal(request.body.model, "deepseek-v4-flash");
+    assert.equal(request.body.reasoning_effort, undefined);
+    assert.equal(request.body.thinking, undefined);
+    assert.deepEqual(request.body.reasoning, { effort: "high" });
+    assert.equal(request.body.tool_choice, "auto");
+    assert.deepEqual(request.body.tools, [{
+      type: "function",
+      name: "probe",
+      parameters: { type: "object", properties: {} },
+    }]);
+  } finally {
+    await stopChild(forwarder);
+    await closeServer(upstream.server);
+  }
+});
+
 test("API forwarder restores DeepSeek thinking parts as reasoning_content", async () => {
   const upstreamRequests = [];
   const upstream = await mockServer(async (request, response) => {
@@ -8864,17 +8925,11 @@ test("a subagent effort overrides the effort Codex nested in the reasoning objec
   }
 });
 
-// #256: spawning a subagent on opencode-go/deepseek-v4-flash made every
-// following parent request 400 with "The `reasoning_content` in the thinking
-// mode must be passed back to the API". LiteLLM's Responses->chat translation
-// drops `reasoning` input items outright, and the carry that compensates for
-// that only recognized a tool loop -- reasoning immediately before a
-// function_call. A subagent ends in prose, so its reasoning was thrown away
-// and the provider was asked to continue a thinking turn it had never been
-// shown. The second reporter saw the same 400 with "Compact old tool results"
-// on, so aging is switched on here as well: it must age the tool result and
-// still leave every reasoning run carried.
-test("reasoning survives the replay onto tool-call and prose assistant turns alike", async () => {
+// #256: a DeepSeek turn must replay every reasoning run without moving private
+// text into a visible assistant message. The native Responses endpoint accepts
+// reasoning items directly, so the router preserves their `reasoning_text`
+// content while tool-result aging runs around them.
+test("DeepSeek reasoning replay stays private across tool-call and prose turns", async () => {
   const gatewayBodies = [];
   const gateway = await mockServer(async (request, response) => {
     gatewayBodies.push(await bodyJson(request));
@@ -8941,20 +8996,20 @@ test("reasoning survives the replay onto tool-call and prose assistant turns ali
     );
     assert.match(older.output, /compacted by Codex Router/);
 
-    // The whole reasoning run reaches the assistant message LiteLLM will fold
-    // the tool call into, not just the item nearest the call.
+    // The whole reasoning run remains a native reasoning item immediately
+    // before the call; it never becomes assistant output text.
     const callIndex = forwarded.findIndex((item) => item?.type === "function_call");
     const beforeCall = forwarded[callIndex - 1];
-    assert.equal(beforeCall.type, "message");
-    assert.equal(beforeCall.role, "assistant");
-    assert.match(text(beforeCall), /The log lives under \/var\/log\./);
-    assert.match(text(beforeCall), /Tail it rather than read the whole file\./);
+    assert.equal(beforeCall.type, "reasoning");
+    assert.deepEqual(beforeCall.content, [
+      { type: "reasoning_text", text: "Tail it rather than read the whole file." },
+    ]);
 
-    // The prose answer carries its own reasoning and still says what it said.
+    // The prose answer carries no private reasoning and still says what it said.
     const answer = forwarded.find(
       (item) => item?.type === "message" && item.role === "assistant" && /All clear\./.test(text(item)),
     );
-    assert.match(text(answer), /Nothing in the tail looks wrong/);
+    assert.deepEqual(answer.content, [{ type: "output_text", text: "All clear." }]);
 
     // One assistant message per turn: two in a row is what several strict
     // chat-completions providers reject.
@@ -9141,7 +9196,7 @@ test("a plain follow-up after a thinking turn replays its reasoning", async () =
   }
 });
 
-test("direct DeepSeek reasoning replay stays out of visible assistant content", async () => {
+test("native DeepSeek reasoning replay stays out of visible assistant content", async () => {
   const gatewayBodies = [];
   const gateway = await mockServer(async (request, response) => {
     gatewayBodies.push(await bodyJson(request));
@@ -9177,13 +9232,87 @@ test("direct DeepSeek reasoning replay stays out of visible assistant content", 
       body: JSON.stringify({ model: "deepseek/deepseek-v4-flash", stream: false, input }),
     });
     assert.equal(response.status, 200, await response.text());
+    const replayedReasoning = gatewayBodies[0].input.find(
+      (item) => item?.type === "reasoning",
+    );
+    assert.deepEqual(replayedReasoning.content, [
+      { type: "reasoning_text", text: "Dune is Frank Herbert's, published 1965." },
+    ]);
+    assert.equal(replayedReasoning.summary, undefined);
     const answer = gatewayBodies[0].input.find(
       (item) => item?.type === "message" && item.role === "assistant",
     );
-    assert.deepEqual(answer.content, [
-      { type: "thinking", text: "Dune is Frank Herbert's, published 1965." },
-      { type: "output_text", text: "Frank Herbert." },
-    ]);
+    assert.deepEqual(answer.content, [{ type: "output_text", text: "Frank Herbert." }]);
+  } finally {
+    await stopChild(router);
+    await closeServer(gateway.server);
+  }
+});
+
+test("native DeepSeek routes namespace tools through its function boundary", async () => {
+  const gatewayBodies = [];
+  const gateway = await mockServer(async (request, response) => {
+    gatewayBodies.push(await bodyJson(request));
+    json(response, 200, {
+      id: "resp_native_tools",
+      object: "response",
+      status: "completed",
+      output: [{
+        type: "message",
+        role: "assistant",
+        content: [{ type: "output_text", text: "done" }],
+      }],
+    });
+  });
+  const routerPort = await openPort();
+  const router = run("router.mjs", {
+    CODEX_ROUTER_PORT: String(routerPort),
+    CODEX_ROUTER_GATEWAY_BASE_URL: `http://127.0.0.1:${gateway.port}/v1`,
+    CODEX_ROUTER_QUIET: "1",
+  });
+  const tools = [{
+    type: "namespace",
+    name: "collaboration",
+    tools: [{
+      type: "function",
+      name: "spawn_agent",
+      inputSchema: { type: "object", properties: { task: { type: "string" } } },
+    }],
+  }];
+  const input = [
+    { type: "message", role: "user", content: [{ type: "input_text", text: "do it" }] },
+    {
+      type: "function_call",
+      call_id: "call_native_tools",
+      name: "spawn_agent",
+      namespace: "collaboration",
+      arguments: JSON.stringify({ task: "inspect" }),
+    },
+  ];
+
+  try {
+    await waitFor(`${routerBase(routerPort)}/models`, router);
+    const response = await fetch(`${routerBase(routerPort)}/responses`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "deepseek/deepseek-v4-flash",
+        input,
+        tools,
+        stream: false,
+      }),
+    });
+    assert.equal(response.status, 200, await response.text());
+    const forwarded = gatewayBodies[0];
+    assert.ok(forwarded);
+    assert.ok(forwarded.tools.every((tool) => tool.type === "function"));
+    assert.equal(forwarded.tools.some((tool) => tool.type === "namespace"), false);
+    assert.ok(forwarded.tools.some((tool) => tool.name === "collaboration__spawn_agent"));
+    const call = forwarded.input.find((item) => item.type === "function_call");
+    assert.deepEqual(
+      { name: call.name, namespace: call.namespace },
+      { name: "collaboration__spawn_agent", namespace: undefined },
+    );
   } finally {
     await stopChild(router);
     await closeServer(gateway.server);
@@ -9344,66 +9473,35 @@ test("router exposes Grok summaries as one canonical Codex reasoning item", asyn
   }
 });
 
-test("router normalizes direct DeepSeek's live reasoning bridge and removes its blank", async () => {
+test("router keeps DeepSeek on its native Responses lifecycle", async () => {
   const model = "deepseek-v4-flash";
-  const reasoningText = "Inspect the request, then call the tool exactly once.";
-  const blankMessage = {
-    id: "msg_direct_live",
+  const reasoningText = "Inspect the request once.";
+  const reasoning = {
+    id: "rs_native_live",
+    type: "reasoning",
+    status: "completed",
+    summary: [],
+  };
+  const message = {
+    id: "msg_native_live",
     type: "message",
     status: "completed",
     role: "assistant",
-    content: [{ type: "output_text", text: "", annotations: [] }],
+    content: [{ type: "output_text", text: "Native answer.", annotations: [] }],
   };
-  const functionCall = {
-    id: "call_direct_live",
-    type: "function_call",
-    call_id: "call_direct_live",
-    name: "exec_command",
-    arguments: "{}",
-    status: "completed",
-  };
-  const terminalReasoning = {
-    id: "rs_-8853496868378332836",
-    type: "reasoning",
-    status: "completed",
-    role: "assistant",
-    content: [{ type: "output_text", text: reasoningText, annotations: [] }],
-  };
-  const terminalBlank = {
-    ...blankMessage,
-    id: "04847f40-ed33-4239-80d2-d392fe38fcc3",
-    content: [{ type: "output_text", annotations: [] }],
-  };
-  const normalizedReasoning = {
-    id: terminalReasoning.id,
-    type: "reasoning",
-    status: "completed",
-    summary: [{ type: "summary_text", text: reasoningText }],
-  };
+  const requestUrls = [];
   const gateway = await mockServer(async (request, response) => {
+    requestUrls.push(request.url);
     await bodyJson(request);
     response.writeHead(200, { "Content-Type": "text/event-stream" });
     const events = [
       {
         type: "response.created",
         response: {
-          id: "resp_direct_live_open",
+          id: "resp_native_live",
           model,
           object: "response",
           status: "in_progress",
-          error: null,
-          output: [],
-        },
-        model,
-      },
-      {
-        type: "response.in_progress",
-        response: {
-          id: "resp_direct_live_open",
-          model,
-          object: "response",
-          status: "in_progress",
-          error: null,
           output: [],
         },
         model,
@@ -9411,96 +9509,71 @@ test("router normalizes direct DeepSeek's live reasoning bridge and removes its 
       {
         type: "response.output_item.added",
         output_index: 0,
-        item: { ...blankMessage, status: "in_progress", content: [] },
+        item: { ...reasoning, status: "in_progress", summary: [] },
         model,
       },
       {
-        type: "response.content_part.added",
-        item_id: blankMessage.id,
+        type: "response.reasoning_text.delta",
+        item_id: reasoning.id,
         output_index: 0,
-        content_index: 0,
-        part: { type: "output_text", text: "", annotations: [] },
+        delta: reasoningText,
         model,
       },
       {
-        type: "response.reasoning_summary_text.delta",
-        item_id: blankMessage.id,
+        type: "response.reasoning_text.done",
+        item_id: reasoning.id,
         output_index: 0,
-        delta: "Inspect the request, then ",
-        model,
-      },
-      {
-        type: "response.reasoning_summary_text.delta",
-        item_id: blankMessage.id,
-        output_index: 0,
-        delta: "call the tool exactly once.",
-        model,
-      },
-      {
-        type: "response.output_item.added",
-        output_index: 1,
-        item: { ...functionCall, arguments: "", status: "in_progress" },
-        model,
-      },
-      {
-        type: "response.function_call_arguments.delta",
-        item_id: functionCall.id,
-        output_index: 1,
-        delta: "{}",
-        model,
-      },
-      {
-        type: "response.function_call_arguments.done",
-        item_id: functionCall.id,
-        output_index: 1,
-        arguments: "{}",
+        text: reasoningText,
         model,
       },
       {
         type: "response.output_item.done",
+        output_index: 0,
+        item: reasoning,
+        model,
+      },
+      {
+        type: "response.output_item.added",
         output_index: 1,
-        sequence_number: 16,
-        item: functionCall,
+        item: { ...message, status: "in_progress", content: [] },
+        model,
+      },
+      {
+        type: "response.output_text.delta",
+        item_id: message.id,
+        output_index: 1,
+        content_index: 0,
+        delta: "Native answer.",
         model,
       },
       {
         type: "response.output_text.done",
-        item_id: blankMessage.id,
-        output_index: 0,
+        item_id: message.id,
+        output_index: 1,
         content_index: 0,
-        text: "",
-        model,
-      },
-      {
-        type: "response.content_part.done",
-        item_id: blankMessage.id,
-        output_index: 0,
-        content_index: 0,
-        part: { type: "reasoning_text", reasoning: reasoningText },
+        text: "Native answer.",
         model,
       },
       {
         type: "response.output_item.done",
-        output_index: 0,
-        sequence_number: 1,
-        item: blankMessage,
+        output_index: 1,
+        item: message,
         model,
       },
       {
         type: "response.completed",
         response: {
-          id: "resp_direct_live_closed",
+          id: "resp_native_live",
           model,
           object: "response",
           status: "completed",
-          error: null,
-          output: [terminalReasoning, terminalBlank, functionCall],
+          output: [reasoning, message],
           usage: { input_tokens: 5, output_tokens: 2, total_tokens: 7 },
         },
         model,
       },
     ];
-    response.end(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(""));
+    response.end(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("") + "data: [DONE]\n\n");
   });
   const routerPort = await openPort();
   const router = run("router.mjs", {
@@ -9515,46 +9588,34 @@ test("router normalizes direct DeepSeek's live reasoning bridge and removes its 
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        model: "deepseek/deepseek-v4-flash-vision-exp",
+        model: "deepseek/deepseek-v4-flash",
         input: "list files",
         stream: true,
       }),
     });
     const text = await response.text();
     assert.equal(response.status, 200, text);
+    assert.deepEqual(requestUrls, ["/v1/responses"]);
     const events = text.split(/\r?\n/)
       .filter((line) => line.startsWith("data: {"))
       .map((line) => JSON.parse(line.slice(5).trim()));
-    assert.equal(text.includes(blankMessage.id), false);
-    assert.equal(text.includes(terminalBlank.id), false);
-    const reasoningEvents = events.filter(
-      (event) => (event.item_id ?? event.item?.id) === terminalReasoning.id,
+    assert.deepEqual(
+      events.filter((event) => event.type === "response.output_text.delta")
+        .map((event) => event.delta),
+      ["Native answer."],
+    );
+    assert.equal(
+      events.filter((event) => event.type === "response.output_text.done").length,
+      1,
     );
     assert.deepEqual(
-      reasoningEvents.map((event) => [event.type, event.output_index]),
-      [
-        ["response.output_item.added", 0],
-        ["response.reasoning_summary_part.added", 0],
-        ["response.reasoning_summary_text.delta", 0],
-        ["response.reasoning_summary_text.delta", 0],
-        ["response.reasoning_summary_text.done", 0],
-        ["response.reasoning_summary_part.done", 0],
-        ["response.output_item.done", 0],
-      ],
-    );
-    const toolEvents = events.filter(
-      (event) => (event.item_id ?? event.item?.id) === functionCall.id,
-    );
-    assert.ok(toolEvents.length >= 3);
-    assert.ok(toolEvents.every((event) => event.output_index === 1));
-    assert.deepEqual(
-      events.filter((event) => event.sequence_number !== undefined)
-        .map((event) => event.sequence_number),
-      [16],
+      events.filter((event) => event.type === "response.output_item.added")
+        .map((event) => event.item.type),
+      ["reasoning", "message"],
     );
     assert.deepEqual(
       events.find((event) => event.type === "response.completed").response.output,
-      [normalizedReasoning, functionCall],
+      [reasoning, message],
     );
   } finally {
     await stopChild(router);
