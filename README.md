@@ -1019,6 +1019,34 @@ anything else their current account catalogs expose:
 | Venice | `venice` | `https://api.venice.ai/api/v1` | [venice.ai/settings/api](https://venice.ai/settings/api) |
 | Nous Research (Hermes) | `nousresearch` | `https://inference-api.nousresearch.com/v1` | [portal.nousresearch.com](https://portal.nousresearch.com) |
 
+### OpenRouter setup and the full live catalog
+
+OpenRouter's checked-in routes are available as soon as its key is stored. The
+provider's complete current `/models` response is still available for local
+review and curation; discovery never publishes an unverified model into the
+gateway automatically.
+
+```sh
+# Prompts without echo and stores the key in protected local state. This also
+# enables OpenRouter without changing any other provider selection.
+./bin/model-router codex provider-key openrouter set
+
+# Read the current account catalog and refresh the protected cache (read-only).
+./bin/discover-models openrouter --refresh --json
+
+# Add any additional catalog entries explicitly, then verify each one live.
+./bin/curate-models openrouter --models MODEL_ID --apply
+./bin/test-model 'openrouter/MODEL_ID' --live --yes
+```
+
+The gateway's `/v1/models` surface lists routes already present in the checked-
+in registry or the protected local curation overlay. The discovery result is
+the provider catalogue, including models not yet proven compatible with
+Codex; this separation keeps a changing OpenRouter catalogue from silently
+changing request behavior. Re-run discovery and curation when OpenRouter adds
+or retires a model. The key value is never accepted as a command-line argument,
+printed, or committed.
+
 Venice API access is an entitlement, not just a key: a free Venice account has
 none. A Pro subscription (the low-rate-limit Explorer tier), a funded USD
 balance, or staked VVV that grants VCU is what makes the key usable, and the

@@ -354,10 +354,11 @@ export async function removeApiCredential(providerId) {
   };
 }
 
-// Catalog-only providers (gemini-api, openrouter, groq, ...) ship no
-// preselected models, so a stored key still leaves the picker empty. Callers
-// use this to name the curation step instead of reporting a provider that
-// looks enabled but shows nothing.
+// Catalog-only providers (gemini-api, groq, ...) ship no preselected models,
+// so a stored key still leaves the picker empty. Callers use this to name the
+// curation step instead of reporting a provider that looks enabled but shows
+// nothing. OpenRouter is intentionally absent: it ships verified presets while
+// still allowing additional models to be curated from its live catalogue.
 export function providerNeedsCuration(providerId, models = MODELS) {
   const providers = new Set(curationProviderIds(providerId));
   return !models.some((model) => providers.has(model.provider));

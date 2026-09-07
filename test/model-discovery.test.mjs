@@ -48,6 +48,43 @@ test("model discovery compares fixtures without needing or exposing a key", () =
   }
 });
 
+test("OpenRouter discovery preserves the complete catalog for explicit curation", () => {
+  const testRoot = mkdtempSync(path.join(os.tmpdir(), "codex-router-openrouter-discovery-"));
+  const fixture = path.join(testRoot, "models.json");
+  writeFileSync(
+    fixture,
+    JSON.stringify({
+      data: [
+        {
+          id: "vendor/flagship",
+          context_length: 1_000_000,
+          top_provider: { context_length: 900_000 },
+          architecture: { input_modalities: ["text", "image"], output_modalities: ["text"] },
+          supported_parameters: ["tools", "tool_choice"],
+        },
+        { id: "vendor/fast" },
+        { id: "vendor/fast:batch" },
+      ],
+    }),
+  );
+  try {
+    const output = execFileSync(
+      process.execPath,
+      ["src/model-discovery.mjs", "openrouter", "--fixture", fixture, "--json"],
+      { cwd: root, encoding: "utf8", env: { ...process.env, OPENROUTER_API_KEY: "" } },
+    );
+    const result = JSON.parse(output);
+    assert.deepEqual(result.discovered, ["vendor/fast", "vendor/fast:batch", "vendor/flagship"]);
+    assert.deepEqual(result.unregistered, result.discovered);
+    assert.deepEqual(result.addable, result.discovered);
+    assert.equal(result.contextLengths["vendor/flagship"], 900_000);
+    assert.equal(result.metadata["vendor/flagship"].supportsTools, true);
+    assert.doesNotMatch(output, /Bearer|OPENROUTER_API_KEY|secret/i);
+  } finally {
+    rmSync(testRoot, { recursive: true, force: true });
+  }
+});
+
 test("OpenCode Go discovery blocks live ids whose protocol route is not certified", () => {
   const testRoot = mkdtempSync(path.join(os.tmpdir(), "codex-router-opencode-route-discovery-"));
   const fixture = path.join(testRoot, "models.json");
