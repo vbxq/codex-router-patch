@@ -1,0 +1,5 @@
+#!/usr/bin/env node
+
+import { runModelListShim } from "../src/codex-model-list-shim.mjs";
+
+runModelListShim();

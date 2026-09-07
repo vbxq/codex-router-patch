@@ -1,0 +1,29 @@
+#!/bin/sh
+set -eu
+
+# Launch the installed ChatGPT Desktop with the user-owned app-server adapter.
+# CODEX_CLI_PATH is read by the Electron main process before it starts its
+# local app-server, so this does not patch /usr/lib/chatgpt or the user's
+# Codex config.
+self=$0
+while [ -L "$self" ]; do
+  link=$(readlink "$self")
+  case "$link" in
+    /*) self=$link ;;
+    *) self=$(dirname -- "$self")/$link ;;
+  esac
+done
+repo_dir=$(CDPATH= cd -- "$(dirname -- "$self")/.." && pwd)
+real_codex=${CODEX_ROUTER_REAL_CODEX:-/usr/lib/chatgpt/resources/codex}
+
+if [ ! -x "$real_codex" ]; then
+  real_codex=$(command -v codex || true)
+fi
+if [ -z "$real_codex" ] || [ ! -x "$real_codex" ]; then
+  echo "codex-router: cannot find the real Codex binary" >&2
+  exit 127
+fi
+
+export CODEX_ROUTER_REAL_CODEX="$real_codex"
+export CODEX_CLI_PATH="$repo_dir/bin/codex-model-list-shim"
+exec /usr/bin/chatgpt "$@"

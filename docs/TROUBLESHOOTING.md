@@ -84,6 +84,28 @@ Inspect Codex's startup catalog directly:
 codex debug models
 ```
 
+### ChatGPT Desktop shows only the first page
+
+Codex Desktop currently asks its local app-server for `model/list` with a limit
+of 100 and does not request the `nextCursor` pages. A large external catalog can
+therefore be healthy in the router and still look truncated in the Desktop
+picker. `bin/codex-model-list-shim` is a narrow JSONL adapter that changes only
+that initial request to a limit of 1000; all other app-server traffic is passed
+through unchanged.
+
+On Linux, launch Desktop through the repository wrapper so Electron sees the
+override before it starts its bundled app-server:
+
+```sh
+./bin/chatgpt-router
+```
+
+The wrapper selects `/usr/lib/chatgpt/resources/codex` as the real Codex binary
+and sets `CODEX_CLI_PATH` to the adapter. Fully quit every existing ChatGPT
+Desktop process before launching it this way; the app-server is created only at
+application startup. The wrapper does not patch `/usr/lib/chatgpt`, the Codex
+configuration, or the router catalog.
+
 ## Routed model agents are missing
 
 Pulling `main` updates only the source checkout. Apply that revision to the
