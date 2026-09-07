@@ -59,6 +59,7 @@ const removeOption = (() => {
 })();
 const apply = process.argv.includes("--apply");
 const noApply = process.argv.includes("--no-apply");
+const allOption = process.argv.includes("--all");
 const freeOnly = process.argv.includes("--free-only");
 const refreshCatalog = process.argv.includes("--refresh");
 const effortsOption = (() => {
@@ -125,7 +126,7 @@ export function curatedSizing(contextLength) {
 
 function usage() {
   console.error(
-    "Usage: curate-models.mjs PROVIDER [--models id1,id2 | interactive] " +
+    "Usage: curate-models.mjs PROVIDER [--models id1,id2 | --all | interactive] " +
       "[--free-only] [--remove id1,id2] [--refresh] [--apply|--no-apply] " +
       `[--efforts ${Object.keys(EFFORT_DESCRIPTIONS).join(",")}] ` +
       `[--request-profile ${Object.keys(REQUEST_PROFILE_DESCRIPTIONS).join("|")}]`,
@@ -324,6 +325,10 @@ if (provider.generic === true && provider.adapter === "openai-completions") {
   );
   process.exit(2);
 }
+if (allOption && providerId !== "openrouter") {
+  console.error("--all is supported only for OpenRouter.");
+  process.exit(2);
+}
 const flagEfforts = (() => {
   try {
     return effortsOption ? parseEfforts(effortsOption) : undefined;
@@ -387,6 +392,9 @@ async function main() {
   if (modelsOption !== undefined && removeOption !== undefined) {
     throw new Error("Use --models to add models or --remove to prune them, not both.");
   }
+  if (allOption && (modelsOption !== undefined || removeOption !== undefined || freeOnly)) {
+    throw new Error("Use --all by itself when selecting every OpenRouter model.");
+  }
   if (freeOnly && (modelsOption !== undefined || removeOption !== undefined)) {
     throw new Error("Use --free-only, --models, or --remove by itself.");
   }
@@ -429,7 +437,7 @@ async function main() {
     throw new Error(`${provider.displayName} currently advertises no unregistered free OpenAI-compatible models.`);
   }
 
-  if (candidates.length === 0 && removeOption === undefined && modelsOption === undefined) {
+  if (candidates.length === 0 && removeOption === undefined && modelsOption === undefined && !allOption) {
     const blockedCandidates = Object.entries(discovery.blocked || {});
     if (blockedCandidates.length) {
       process.stdout.write(`No newly advertised ${provider.displayName} models are supported by this Codex Router version yet.\n`);
@@ -442,14 +450,16 @@ async function main() {
     return;
   }
 
-  const interactiveSelection = modelsOption === undefined && removeOption === undefined && !freeOnly;
-  const chosen = modelsOption
-    ? modelsOption.split(",").map((value) => value.trim()).filter(Boolean)
-    : freeOnly
-      ? freeCandidates
-    : interactiveSelection
-      ? chooseInteractively(candidates, curated)
-      : [];
+  const interactiveSelection = modelsOption === undefined && removeOption === undefined && !freeOnly && !allOption;
+  const chosen = allOption
+    ? candidates
+    : modelsOption
+      ? modelsOption.split(",").map((value) => value.trim()).filter(Boolean)
+      : freeOnly
+        ? freeCandidates
+        : interactiveSelection
+          ? chooseInteractively(candidates, curated)
+          : [];
   if (removeOption === undefined) {
     for (const id of chosen) {
       if (candidates.includes(id)) continue;
@@ -478,6 +488,27 @@ async function main() {
       ...(flagEfforts || {}),
       ...(discovery.free?.includes(id) ? { isFree: true } : {}),
     };
+    // `--all` is an explicit OpenRouter opt-in to publish every currently
+    // discovered model. Reuse the provider's own capability record where it
+    // can be represented by the local picker contract instead of asking for
+    // hundreds of per-model prompts. `none` is OpenRouter's no-thinking rung;
+    // Codex has no matching picker value, so leave it out and retain the
+    // conservative `high` fallback when it is the only advertised option.
+    if (allOption && providerId === "openrouter") {
+      const live = discovery.metadata?.[id];
+      const inputModalities = Array.isArray(live?.inputModalities)
+        ? live.inputModalities.filter((value) => ["text", "image"].includes(value))
+        : [];
+      if (inputModalities.includes("text")) {
+        metadata.inputModalities = [...new Set(inputModalities)].sort();
+      }
+      const supportedEfforts = Array.isArray(live?.reasoning?.supportedEfforts)
+        ? live.reasoning.supportedEfforts.filter((effort) => Object.hasOwn(EFFORT_DESCRIPTIONS, effort))
+        : [];
+      if (supportedEfforts.length) {
+        Object.assign(metadata, parseEfforts(supportedEfforts.join(",")));
+      }
+    }
     // The ChatGPT Web launcher owns these catalog rows and derives them from
     // the signed-in account. Its clean labels and input modalities are part of
     // the same local contract as the account-gated model ids, so preserve them

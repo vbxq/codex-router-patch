@@ -279,6 +279,68 @@ test("scripted OpenCode curation refuses an uncertified discovered protocol rout
   }
 });
 
+test("OpenRouter --all curates every discovered model without per-model prompts", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "curate-models-openrouter-all-"));
+  const file = path.join(dir, "user-models.json");
+  const fixture = path.join(dir, "models.json");
+  writeFileSync(fixture, JSON.stringify({
+    data: [
+      {
+        id: "vendor/all-a",
+        context_length: 200_000,
+        top_provider: { context_length: 180_000 },
+        architecture: { input_modalities: ["text", "image"], output_modalities: ["text"] },
+        reasoning: { supported_efforts: ["low", "high"], default_effort: "high" },
+      },
+      { id: "vendor/all-b" },
+    ],
+  }));
+  try {
+    const result = spawnSync(
+      process.execPath,
+      [
+        path.join(root, "src", "curate-models.mjs"),
+        "openrouter",
+        "--all",
+        "--fixture",
+        fixture,
+        "--no-apply",
+      ],
+      {
+        cwd: root,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          MODEL_ROUTER_STATE_DIR: path.join(dir, "state"),
+          MODEL_ROUTER_USER_MODELS: file,
+          OPENROUTER_API_KEY: "",
+        },
+      },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    const models = JSON.parse(readFileSync(file, "utf8")).models;
+    assert.deepEqual(models.map((model) => model.upstreamModel), ["vendor/all-a", "vendor/all-b"]);
+    assert.equal(models[0].contextWindow, 180_000);
+    assert.deepEqual(models[0].inputModalities, ["image", "text"]);
+    assert.deepEqual(models[0].reasoningLevels.map((level) => level.effort), ["low", "high"]);
+    assert.equal(models[0].defaultEffort, "high");
+    assert.equal(models[1].contextWindow, DEFAULT_CONTEXT_WINDOW);
+    assert.match(result.stdout, /Saved 2 curated OpenRouter models/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("OpenRouter --all is scoped to the OpenRouter provider", () => {
+  const result = spawnSync(
+    process.execPath,
+    [path.join(root, "src", "curate-models.mjs"), "gemini-api", "--all"],
+    { cwd: root, encoding: "utf8", env: { ...process.env, GEMINI_API_KEY: "" } },
+  );
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /--all is supported only for OpenRouter/);
+});
+
 test("scripted Command Code curation refuses an uncertified discovered protocol route", () => {
   const dir = mkdtempSync(path.join(os.tmpdir(), "curate-models-commandcode-blocked-"));
   const fixture = path.join(dir, "models.json");

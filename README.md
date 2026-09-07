@@ -1034,7 +1034,10 @@ gateway automatically.
 # Read the current account catalog and refresh the protected cache (read-only).
 ./bin/discover-models openrouter --refresh --json
 
-# Add any additional catalog entries explicitly, then verify each one live.
+# Add every currently advertised OpenRouter model without per-model prompts.
+./bin/curate-models openrouter --all --apply
+
+# Or add one entry explicitly and verify it live.
 ./bin/curate-models openrouter --models MODEL_ID --apply
 ./bin/test-model 'openrouter/MODEL_ID' --live --yes
 ```
@@ -1042,10 +1045,12 @@ gateway automatically.
 The gateway's `/v1/models` surface lists routes already present in the checked-
 in registry or the protected local curation overlay. The discovery result is
 the provider catalogue, including models not yet proven compatible with
-Codex; this separation keeps a changing OpenRouter catalogue from silently
-changing request behavior. Re-run discovery and curation when OpenRouter adds
-or retires a model. The key value is never accepted as a command-line argument,
-printed, or committed.
+Codex. `--all` is an explicit exception for operators who want the entire
+current catalogue in the picker: it copies OpenRouter's advertised context,
+image-input, and reasoning metadata, but it does not run a live compatibility
+probe for every model. Some variants may therefore fail when used with tools.
+Re-run discovery and `--all` when OpenRouter adds or retires a model. The key
+value is never accepted as a command-line argument, printed, or committed.
 
 Venice API access is an entitlement, not just a key: a free Venice account has
 none. A Pro subscription (the low-rate-limit Explorer tier), a funded USD
