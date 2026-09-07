@@ -62,6 +62,16 @@ export function renderLiteLlmConfig() {
       )}`,
       `      api_base: ${yamlString(`os.environ/${apiBaseEnv}`)}`,
       '      api_key: "os.environ/CODEX_ROUTER_INTERNAL_KEY"',
+      ...(provider.id === "nousresearch"
+        ? [
+            // Nous Portal's free routes can return a Cloudflare 520 together
+            // with retry-after: 60. LiteLLM's default two hidden retries then
+            // hold a Codex turn for up to two minutes before the outer router
+            // can classify the failure and fail over. The router already owns
+            // retry/failover policy, so send each Nous attempt once.
+            "      num_retries: 0",
+          ]
+        : []),
       ...(responsesSurface ? [] : ["      use_chat_completions_api: true"]),
       "",
     );

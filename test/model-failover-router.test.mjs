@@ -151,6 +151,16 @@ const TRANSPORT_BODY = JSON.stringify({
   },
 });
 
+const NOUS_CLOUDFLARE_520_BODY = JSON.stringify({
+  error: {
+    message:
+      "litellm.InternalServerError: OpenAIException - Error code: 520 - origin unavailable",
+    error_code: 520,
+    retryable: true,
+    retry_after: 60,
+  },
+});
+
 async function mockServer(handler) {
   const server = http.createServer(handler);
   await new Promise((resolve, reject) => {
@@ -458,6 +468,38 @@ test("a turn whose provider is out of usage is served by the next model", async 
     assert.match(child.testErrors(), /failover model=deepseek\/deepseek-v4-pro/);
     assert.match(child.testErrors(), /reason=out_of_usage/);
     assert.match(child.testErrors(), /-> zai-api\/glm-5\.2 outcome=200/);
+  } finally {
+    await stopChild(child);
+    await closeServer(gw.server);
+  }
+});
+
+test("a Nous Cloudflare 520 wrapped as 500 fails over immediately", async () => {
+  const seen = [];
+  const gw = await gateway(async (request, response) => {
+    const body = await bodyJson(request);
+    seen.push(body);
+    if (body.model === PRIMARY.gatewayModel) {
+      response.writeHead(500, {
+        "Content-Type": "application/json",
+        "Content-Length": String(Buffer.byteLength(NOUS_CLOUDFLARE_520_BODY)),
+      });
+      response.end(NOUS_CLOUDFLARE_520_BODY);
+      return;
+    }
+    response.writeHead(200, { "Content-Type": "text/event-stream" });
+    response.end(contentSse("cloudflare-fallback"));
+  });
+  const routerPort = await openPort();
+  const child = run(routerEnv(gw.port, routerPort));
+  try {
+    await waitFor(`http://127.0.0.1:${routerPort}/health`, child);
+    const result = await readRouted(routerPort, TURN_BODY);
+    assert.deepEqual(seen.map((body) => body.model), [PRIMARY.gatewayModel, FALLBACK.gatewayModel]);
+    assert.equal(result.status, 200);
+    assert.match(result.body, /answered-by-cloudflare-fallback/);
+    assert.doesNotMatch(result.body, /520/);
+    assert.match(child.testErrors(), /reason=provider_outage/);
   } finally {
     await stopChild(child);
     await closeServer(gw.server);

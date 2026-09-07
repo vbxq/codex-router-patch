@@ -56,6 +56,27 @@ export const FAILOVER_BUDGET_MS = 30_000;
 
 const MAX_COOLDOWN_ENTRIES = 64;
 
+// LiteLLM wraps Nous Portal's Cloudflare 520 in a local HTTP 500. Preserve a
+// narrow recognition rule for that known retryable origin failure so the outer
+// router can fail over instead of relaying a blank 500 after LiteLLM retries.
+const NOUS_CLOUDFLARE_520 = /(?:error_code|Error code|\bstatus)\s*[:=]\s*["']?520\b/i;
+const RETRYABLE_TRUE = /["']retryable["']\s*:\s*true\b/i;
+
+function retryAfterFromBody(bodyText) {
+  if (typeof bodyText !== "string") return undefined;
+  const match = bodyText.match(/["']retry_after["']\s*:\s*(\d+(?:\.\d+)?)/i);
+  const seconds = Number(match?.[1]);
+  return Number.isFinite(seconds) && seconds > 0 ? seconds : undefined;
+}
+
+function nousCloudflareFailure(bodyText) {
+  return (
+    typeof bodyText === "string" &&
+    NOUS_CLOUDFLARE_520.test(bodyText) &&
+    RETRYABLE_TRUE.test(bodyText)
+  );
+}
+
 // Free before paid, and the operator's signed-in ChatGPT plan between them.
 // A free model is a real downgrade in capability, so it is not the first choice
 // on merit -- it is first because it is the only tier that cannot surprise
@@ -92,9 +113,16 @@ export function classifyRoutedFailure({ status, bodyText, retryAfterSeconds, now
   // has committed a response. A generic provider 5xx remains an application
   // failure and is never switched away silently.
   if (code >= 500) {
-    return hasProviderTransportError(bodyText)
-      ? { swap: true, reason: "transport" }
-      : { swap: false };
+    if (hasProviderTransportError(bodyText)) return { swap: true, reason: "transport" };
+    if (nousCloudflareFailure(bodyText)) {
+      const retryAfter = retryAfterFromBody(bodyText);
+      return {
+        swap: true,
+        reason: "provider_outage",
+        ...(retryAfter ? { until: cappedUntil(nowMs(now), retryAfter * 1_000) } : {}),
+      };
+    }
+    return { swap: false };
   }
   const at = nowMs(now);
   const retryAfter = Number(retryAfterSeconds);

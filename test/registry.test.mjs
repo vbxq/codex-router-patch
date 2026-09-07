@@ -1025,6 +1025,21 @@ test("only Z.ai Coding Plan model groups disable LiteLLM rate-limit retries", ()
   assert.doesNotMatch(rendered, /zai-api-glm-5-3:\n\s+RateLimitErrorRetries: 0/);
 });
 
+test("Nous Portal routes disable LiteLLM hidden retries", () => {
+  const rendered = renderLiteLlmConfig();
+  const blocks = [...rendered.matchAll(
+    /  - model_name: "([^"]+)"\n    litellm_params:\n([\s\S]*?)(?=\n  - model_name:|\nlitellm_settings:)/g,
+  )];
+  const nous = blocks.filter(([, name]) => name.startsWith("nousresearch-"));
+  assert.ok(nous.length > 0, "Nous Portal routes must be present");
+  for (const [, name, block] of nous) {
+    assert.match(block, /\n      num_retries: 0\n/, name);
+  }
+  for (const [, name, block] of blocks.filter(([, modelName]) => !modelName.startsWith("nousresearch-"))) {
+    assert.doesNotMatch(block, /\n      num_retries: 0\n/, name);
+  }
+});
+
 test("LiteLLM configuration is generated from every registry route", () => {
   const rendered = renderLiteLlmConfig();
   for (const model of MODELS) {
