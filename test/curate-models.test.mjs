@@ -341,6 +341,56 @@ test("OpenRouter --all is scoped to the OpenRouter provider", () => {
   assert.match(result.stderr, /--all is supported only for OpenRouter/);
 });
 
+test("OpenRouter --all also shows checked-in OpenRouter routes", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "curate-models-openrouter-all-picker-"));
+  const file = path.join(dir, "user-models.json");
+  const pickerFile = path.join(dir, "model-picker.json");
+  const fixture = path.join(dir, "models.json");
+  writeFileSync(pickerFile, JSON.stringify({
+    version: 1,
+    hidden: ["openrouter/grok-4.6"],
+    visible: [],
+    seeded: ["openrouter/grok-4.6"],
+  }));
+  writeFileSync(fixture, JSON.stringify({
+    data: [
+      { id: "x-ai/grok-4.6" },
+      { id: "vendor/all-c" },
+    ],
+  }));
+  try {
+    const result = spawnSync(
+      process.execPath,
+      [
+        path.join(root, "src", "curate-models.mjs"),
+        "openrouter",
+        "--all",
+        "--fixture",
+        fixture,
+        "--no-apply",
+      ],
+      {
+        cwd: root,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          MODEL_ROUTER_STATE_DIR: dir,
+          MODEL_ROUTER_USER_MODELS: file,
+          MODEL_ROUTER_MODEL_PICKER_STATE: pickerFile,
+          OPENROUTER_API_KEY: "",
+        },
+      },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    const picker = JSON.parse(readFileSync(pickerFile, "utf8"));
+    assert.ok(picker.visible.includes("openrouter/grok-4.6"));
+    assert.ok(picker.visible.includes("openrouter/vendor/all-c"));
+    assert.equal(picker.hidden.includes("openrouter/grok-4.6"), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("scripted Command Code curation refuses an uncertified discovered protocol route", () => {
   const dir = mkdtempSync(path.join(os.tmpdir(), "curate-models-commandcode-blocked-"));
   const fixture = path.join(dir, "models.json");

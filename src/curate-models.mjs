@@ -672,9 +672,18 @@ async function main() {
   // Selecting a model in curation means selecting it for the picker as well.
   // Provider enablement alone remains deliberately non-expansive: it must not
   // flood every installed client's picker with that provider's whole catalog.
-  const pickerSelections = nextMine
-    .filter((model) => chosen.includes(model.upstreamModel))
-    .map((model) => model.slug);
+  const pickerSelections = [
+    ...new Set([
+      ...nextMine
+        .filter((model) => chosen.includes(model.upstreamModel))
+        .map((model) => model.slug),
+      ...(allOption && providerId === "openrouter"
+        ? CHECKED_IN_MODELS
+          .filter((model) => model.provider === providerId)
+          .map((model) => model.slug)
+        : []),
+    ]),
+  ];
   const normalizedByUpstream = new Map(
     nextMine.map((model) => [model.upstreamModel, model]),
   );
