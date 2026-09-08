@@ -830,7 +830,8 @@ function routedHeaders() {
 // can cause the upstream model to emit an invalid forced call.
 function normalizeAutoToolChoice(payload, route) {
   if (
-    ["auto-tool-choice", "ollama-cloud-auto-tool-choice"].includes(route.requestProfile) &&
+    (["auto-tool-choice", "ollama-cloud-auto-tool-choice"].includes(route.requestProfile) ||
+      needsOpenRouterAutoToolChoice(route)) &&
     payload.tool_choice !== undefined &&
     payload.tool_choice !== "none"
   ) {
@@ -923,6 +924,26 @@ const OPENROUTER_MUSE_SPARK_MODELS = new Set([
   "meta/muse-spark-1.3",
   "meta/muse-spark-1.3-contributor",
 ]);
+
+// OpenRouter advertises tool-choice support for these free routes, but live
+// probes show that a forced choice can be rendered as prose containing a
+// pseudo-call instead of a real function call. Codex can safely ask for an
+// automatic choice: the same probes produce genuine calls while leaving the
+// tool inventory intact. Keep this exact to measured upstream IDs; other
+// OpenRouter models retain their declared contract until they are observed to
+// need the same compatibility rule.
+const OPENROUTER_AUTO_TOOL_CHOICE_MODELS = new Set([
+  "dots-studio/dots-3-note-preview:free",
+  "nvidia/nemotron-3-super-120b-a12b:free",
+  "nvidia/nemotron-3-ultra-550b-a55b:free",
+]);
+
+function needsOpenRouterAutoToolChoice(route) {
+  return (
+    providerForModel(route)?.id === "openrouter" &&
+    OPENROUTER_AUTO_TOOL_CHOICE_MODELS.has(route.upstreamModel)
+  );
+}
 
 function needsOpenRouterMuseToolNameCompatibility(route) {
   return (

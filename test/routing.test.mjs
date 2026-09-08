@@ -7372,6 +7372,107 @@ test("router normalizes forced tool choices before LiteLLM for auto-tool-choice 
   }
 });
 
+function curatedOpenRouterFreeToolChoiceModels() {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "routing-openrouter-free-tool-choice-"));
+  const file = path.join(dir, "user-models.json");
+  const definitions = [
+    [
+      "openrouter/dots-studio/dots-3-note-preview:free",
+      "openrouter-dots-studio-dots-3-note-preview-free",
+      "dots-studio/dots-3-note-preview:free",
+    ],
+    [
+      "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
+      "openrouter-nvidia-nemotron-3-ultra-550b-a55b-free",
+      "nvidia/nemotron-3-ultra-550b-a55b:free",
+    ],
+    [
+      "openrouter/nvidia/nemotron-3-super-120b-a12b:free",
+      "openrouter-nvidia-nemotron-3-super-120b-a12b-free",
+      "nvidia/nemotron-3-super-120b-a12b:free",
+    ],
+    [
+      "openrouter/openai/gpt-5.3",
+      "openrouter-openai-gpt-5-3-tool-choice-sibling",
+      "openai/gpt-5.3",
+    ],
+  ];
+  writeFileSync(
+    file,
+    JSON.stringify({
+      version: 1,
+      models: definitions.map(([slug, gatewayModel, upstreamModel]) => ({
+        slug,
+        gatewayModel,
+        upstreamModel,
+        provider: "openrouter",
+        listed: true,
+        displayName: `${upstreamModel} (fixture)`,
+        description: "Test fixture.",
+        priority: 500,
+        defaultEffort: "high",
+        reasoningLevels: [{ effort: "high", description: "Adaptive reasoning" }],
+        contextWindow: 131072,
+        autoCompact: 110000,
+        inputModalities: ["text"],
+        compHash: `${gatewayModel}-user-v1`,
+      })),
+    }),
+    "utf8",
+  );
+  return { dir, file, definitions };
+}
+
+test("router normalizes forced tool choices for measured OpenRouter free routes", async () => {
+  const gatewayRequests = [];
+  const gateway = await mockServer(async (request, response) => {
+    gatewayRequests.push(await bodyJson(request));
+    json(response, 200, { id: "resp_test", object: "response", output: [] });
+  });
+  const curated = curatedOpenRouterFreeToolChoiceModels();
+  const routerPort = await openPort();
+  const router = run("router.mjs", {
+    CODEX_ROUTER_PORT: String(routerPort),
+    MODEL_ROUTER_USER_MODELS: curated.file,
+    CODEX_ROUTER_GATEWAY_BASE_URL: `http://127.0.0.1:${gateway.port}/v1`,
+    CODEX_ROUTER_QUIET: "1",
+  });
+  const headers = {
+    Authorization: `Bearer ${CALLER_KEY}`,
+    "Content-Type": "application/json",
+  };
+  const tools = [{
+    type: "function",
+    name: "codex_router_probe",
+    parameters: { type: "object", properties: { value: { type: "string" } } },
+  }];
+
+  async function route(slug, toolChoice) {
+    const response = await fetch(`${routerBase(routerPort)}/responses`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ model: slug, input: "call the probe", tools, tool_choice: toolChoice }),
+    });
+    assert.equal(response.status, 200, router.testErrors());
+    return gatewayRequests.at(-1);
+  }
+
+  try {
+    await waitFor(`${routerBase(routerPort)}/models`, router);
+    for (const [slug] of curated.definitions.slice(0, 3)) {
+      assert.equal((await route(slug, "required")).tool_choice, "auto");
+    }
+    assert.equal(
+      (await route(curated.definitions[3][0], "required")).tool_choice,
+      "required",
+    );
+  } finally {
+    await stopChild(router);
+    await closeServer(gateway.server);
+    rmSync(curated.dir, { recursive: true, force: true });
+  }
+});
+
 test("router applies Moonshot ref repair only to the proven Console Go Kimi route", async () => {
   const gatewayRequests = [];
   const gateway = await mockServer(async (request, response) => {
