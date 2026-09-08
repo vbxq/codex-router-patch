@@ -13,6 +13,12 @@ const OVERLAYS = {
 - On Windows, avoid fragile nested PowerShell, SQL, and JSON quoting in one command. Prefer structured arguments, here-strings, or a temporary script/file for complex payloads, and check optional paths before reading them.
 - After a tool result, continue execution unless it materially changes the plan or requires user input.
 - Lead the final response with the outcome and verification rather than a chronological process recap.`,
+  "persistent-agentic": `## Execution persistence
+- When the user asks you to inspect, change, test, or fix something, carry the work through in this turn unless the user explicitly asks for a plan only or asks you to pause.
+- Never end a work turn with a plan or proposal.
+- A sentence such as "I will..." or "Proposing..." is not a completion. Continue with the next tool and keep working until the requested change is done or a concrete blocker requires the user's input.
+- After every tool result, decide whether work remains. If it does, continue with the next tool immediately instead of sending an empty or final progress message.
+- If a command or provider is slow, keep the turn alive and let it finish; do not treat a quiet interval as permission to stop.`,
   "filesystem-mcp-discipline": `## Local files and MCP resources
 - Treat ordinary local filesystem paths as files, never as MCP resource URIs. Use an available filesystem or shell tool, such as exec_command, to inspect local files.
 - Call read_mcp_resource only with a server name and URI returned by MCP resource or resource-template discovery in the current session. Never invent an MCP server name such as file.

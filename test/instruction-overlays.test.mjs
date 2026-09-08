@@ -17,3 +17,13 @@ test("Grok 4.6 OAuth distinguishes local files from discovered MCP resources", (
   assert.match(instructions, /unknown server or invalid URI.*do not repeat/is);
   assert.match(instructions, /Keep using read_mcp_resource for valid resources/i);
 });
+
+test("Muse Spark keeps executing after a plan when the user requested changes", () => {
+  const model = MODEL_BY_SLUG.get("openrouter/muse-spark-1.3-contributor");
+  assert.equal(model?.instructionOverlay, "persistent-agentic");
+
+  const instructions = applyInstructionOverlay("Base instructions.", model.instructionOverlay);
+  assert.match(instructions, /never end a work turn with a plan or proposal/i);
+  assert.match(instructions, /I will|Proposing/i);
+  assert.match(instructions, /continue with the next tool/i);
+});
