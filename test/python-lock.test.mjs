@@ -34,8 +34,6 @@ import {
   stepStatus,
 } from "../src/install-plan.mjs";
 
-const LOCK_WORKFLOW = ".github/workflows/python-lock.yml";
-
 function repoFile(relative) {
   return path.join(SOURCE_ROOT, ...relative.split("/"));
 }
@@ -129,33 +127,6 @@ test("an unknown tool or platform is refused rather than guessed", () => {
   assert.throws(() => pythonInstallCommand("uv", { platform: "plan9" }), /Unknown installer platform/);
 });
 
-// The whole point of the CI job is that it runs the *shipped* command. A future
-// edit that pastes a pip line into the workflow would make it possible for CI
-// to pass while bin/install fails, which is the gap it was added to close.
-test("the lock workflow derives its install command from the installer", () => {
-  const workflow = readFileSync(repoFile(LOCK_WORKFLOW), "utf8");
-  assert.match(workflow, /install-plan\.mjs python-install-command/);
-  const handWritten = workflow
-    .split("\n")
-    .filter((line) => !line.trim().startsWith("#"))
-    .filter((line) => /(uv\s+pip|-m\s+pip)\s+install\s/.test(line))
-    .filter((line) => line.includes(PYTHON_LOCK));
-  assert.deepEqual(handWritten, [], "the workflow must not spell the install command itself");
-});
-
-// A paths filter that stops covering an input turns the job off silently for
-// exactly the change that needed it.
-test("the lock workflow is gated on every input that can invalidate the lock", () => {
-  const workflow = readFileSync(repoFile(LOCK_WORKFLOW), "utf8");
-  const gated = ["requirements/**", ...Object.values(INSTALLER_SCRIPTS), "src/install-plan.mjs"];
-  for (const input of gated) {
-    assert.ok(workflow.includes(`"${input}"`), `${LOCK_WORKFLOW} does not run when ${input} changes`);
-  }
-  // Paths filters cannot see a wheel PyPI yanked under an unchanged lock, so
-  // the schedule is part of the gate rather than a nicety.
-  assert.match(workflow, /^\s*schedule:/m, `${LOCK_WORKFLOW} must also run on a schedule`);
-});
-
 test("a regenerated lock reinstalls even when the pins are unchanged", () => {
   const root = mkdtempSync(path.join(tmpdir(), "python-lock-"));
   try {
@@ -236,7 +207,7 @@ test("an unhashed requirement in the lock is reported", () => {
   }
 });
 
-// The CI verifier starts the gateway itself, so it has to hand it the same
+// The verifier starts the gateway itself, so it has to hand it the same
 // environment src/start.mjs does. The encoding pair is the load-bearing part:
 // LiteLLM prints Unicode banners at startup, and on a non-UTF-8 Windows code
 // page that raises UnicodeEncodeError before the app finishes coming up. The
@@ -245,7 +216,7 @@ test("an unhashed requirement in the lock is reported", () => {
 // the router does, which is the only thing it claims to test. Two copies of a
 // constant is exactly the shape that has drifted in this repo before, so the
 // agreement is asserted rather than left to the comment in each file.
-test("the CI gateway verifier starts LiteLLM with the environment start.mjs uses", () => {
+test("the gateway verifier starts LiteLLM with the environment start.mjs uses", () => {
   const starter = readFileSync(repoFile("src/start.mjs"), "utf8");
   const verifier = readFileSync(
     repoFile("scripts/verify-python-lock.py"),
@@ -273,20 +244,3 @@ test("the CI gateway verifier starts LiteLLM with the environment start.mjs uses
 function repoFileIn(root, relative) {
   return path.join(root, ...relative.split("/"));
 }
-
-
-test("the Python gateway workflow guards the Z.ai LiteLLM usage bridge", () => {
-  const workflow = readFileSync(repoFile(LOCK_WORKFLOW), "utf8");
-  for (const input of [
-    "src/api-forwarder.mjs",
-    "src/zai-cache-usage.mjs",
-    "scripts/verify-zai-litellm-usage.mjs",
-  ]) {
-    assert.ok(workflow.includes(`"${input}"`), `${LOCK_WORKFLOW} does not run when ${input} changes`);
-  }
-  assert.match(
-    workflow,
-    /node scripts\/verify-zai-litellm-usage\.mjs "\$venv_python"/,
-    "the installed LiteLLM bridge must be exercised after the lock is installed",
-  );
-});

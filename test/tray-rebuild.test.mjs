@@ -1306,7 +1306,7 @@ test("the fingerprint covers every source file, not just the first", () => {
 test("every tray assertion names its platform instead of inheriting the host", () => {
   // This file's job is cross-platform behaviour, so a bare call that inherits
   // process.platform makes the suite pass or fail depending on the runner --
-  // which is exactly how a green macOS run shipped a red Linux and Windows CI.
+  // which is exactly how a green macOS run can hide a red Linux and Windows result.
   const self = readFileSync(fileURLToPath(import.meta.url), "utf8");
   // A single-argument call inherits the runner's platform. Both helpers take
   // the platform second, so every call site here must pass one.
@@ -1317,20 +1317,14 @@ test("every tray assertion names its platform instead of inheriting the host", (
 });
 
 // Regression for #180. The mode decision itself is covered by real Swift tests
-// (apps/macos/ModelRouterTray/Tests/IslandModeTests.swift), which CI runs on
-// the macOS matrix leg -- asserting on the source text of an initializer only
-// ever proved the source said something. What stays here is the wiring those
-// Swift tests cannot see.
-test("the tray ships a Swift test target and CI runs it", () => {
+// (apps/macos/ModelRouterTray/Tests/IslandModeTests.swift). What stays here is
+// the wiring those Swift tests cannot see.
+test("the tray ships a Swift test target", () => {
   const manifest = readFileSync(
     path.join(root, "apps", "macos", "ModelRouterTray", "Package.swift"),
     "utf8",
   );
   assert.match(manifest, /\.testTarget\(\s*\n\s*name: "ModelRouterTrayTests"/);
-
-  const workflow = readFileSync(path.join(root, ".github", "workflows", "ci.yml"), "utf8");
-  assert.match(workflow, /working-directory: apps\/macos\/ModelRouterTray\s+run: swift test/);
-  assert.match(workflow, /if: runner\.os == 'macOS'/);
 });
 
 test("the island mode decision stays pure, so it stays testable", () => {

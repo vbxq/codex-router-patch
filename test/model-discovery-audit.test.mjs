@@ -12,8 +12,6 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const { PROVIDERS } = await import("../src/model-registry.mjs");
-const { providerCatalogKind } = await import("../src/provider-catalogs.mjs");
 const {
   auditCatalogSourceIds,
   auditProviderModels,
@@ -159,37 +157,4 @@ test("the audit markdown summarizes drift without exposing multiline output", as
 test("generic audit error redaction covers bearer and API-key assignments", () => {
   const message = redactAuditError("Bearer abcdef API_KEY=ghijkl");
   assert.equal(message, "Bearer [redacted] API_KEY=[redacted]");
-});
-
-test("the discovery workflow keeps live secrets away from pull-request code", () => {
-  const workflow = readFileSync(path.join(root, ".github/workflows/model-discovery.yml"), "utf8");
-  assert.match(workflow, /^\s*pull_request:/m);
-  assert.match(workflow, /^\s*schedule:/m);
-  assert.match(workflow, /^\s*workflow_dispatch:/m);
-  assert.doesNotMatch(workflow, /pull_request_target/);
-  assert.match(workflow, /if: github\.event_name == 'pull_request'/);
-  assert.match(workflow, /ref: \$\{\{ github\.event\.repository\.default_branch \}\}/);
-  assert.match(workflow, /node --test test\/model-discovery-audit\.test\.mjs test\/model-discovery\.test\.mjs/);
-  assert.match(workflow, /actions\/upload-artifact@v7/);
-  assert.match(workflow, /if: always\(\)/);
-  const auditStep = workflow.indexOf("name: Audit official provider model lists");
-  assert.ok(auditStep > 0);
-  assert.doesNotMatch(
-    workflow.slice(0, auditStep),
-    /\$\{\{ secrets\./,
-    "provider secrets must be scoped to the live audit step",
-  );
-  for (const provider of PROVIDERS.values()) {
-    if (
-      provider.variantOf ||
-      providerCatalogKind(provider) !== "models-endpoint" ||
-      provider.authMode === "anonymous" ||
-      provider.keyless
-    ) continue;
-    const names = provider.credential?.environment || [];
-    assert.ok(
-      names.some((name) => workflow.includes(`secrets.${name}`)),
-      `${provider.id} has no repository secret mapping in the live audit step`,
-    );
-  }
 });
