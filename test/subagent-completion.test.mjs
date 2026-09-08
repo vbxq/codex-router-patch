@@ -7,6 +7,7 @@ import {
   pendingInterruptTargets,
   buildInterruptAgentCall,
   filterAlreadyInterrupted,
+  followupTargetFromCall,
 } from "../src/subagent-completion.mjs";
 import {
   NamespaceToolCallTransform,
@@ -47,6 +48,7 @@ function collaborationNamespaces() {
         { type: "function", name: "spawn_agent" },
         { type: "function", name: "interrupt_agent" },
         { type: "function", name: "wait_agent" },
+        { type: "function", name: "send_message" },
       ],
     },
   ]).namespaces;
@@ -100,6 +102,35 @@ test("filterAlreadyInterrupted matches /root/child and child forms", () => {
   assert.deepEqual(filterAlreadyInterrupted(pending, interrupted), [
     "/root/child_b",
   ]);
+});
+
+test("follow-up calls identify a child that must not be auto-interrupted", () => {
+  assert.equal(
+    followupTargetFromCall({
+      type: "function_call",
+      namespace: "collaboration",
+      name: "send_message",
+      arguments: JSON.stringify({ target: "/root/child", message: "continue" }),
+    }),
+    "/root/child",
+  );
+  assert.equal(
+    followupTargetFromCall({
+      type: "function_call",
+      name: "collaboration__followup_task",
+      arguments: JSON.stringify({ target: "child", message: "continue" }),
+    }),
+    "child",
+  );
+  assert.equal(
+    followupTargetFromCall({
+      type: "function_call",
+      namespace: "collaboration",
+      name: "list_agents",
+      arguments: "{}",
+    }),
+    undefined,
+  );
 });
 
 test("ordinary prose quoting a FINAL_ANSWER envelope is not a finished child", () => {
@@ -261,6 +292,36 @@ test("stream transform does not re-interrupt a target the model already closed",
   // Restored model call remains; no second router interrupt for same target.
   assert.match(output, /"name":"interrupt_agent"/);
   assert.equal((output.match(/call_router_interrupt_/g) || []).length, 0);
+});
+
+test("stream transform defers an injected close when the model follows up", async () => {
+  const namespaces = collaborationNamespaces();
+  const events = [
+    {
+      type: "response.output_item.done",
+      sequence_number: 1,
+      item: {
+        type: "function_call",
+        name: "collaboration__send_message",
+        call_id: "call_followup",
+        arguments: JSON.stringify({ target: "/root/child", message: "continue" }),
+      },
+    },
+    {
+      type: "response.completed",
+      sequence_number: 2,
+      response: { output: [] },
+    },
+  ].map((event) => `data: ${JSON.stringify(event)}\n\n`);
+  const output = await collect(
+    Readable.from(events).pipe(
+      new NamespaceToolCallTransform(namespaces, "text/event-stream", "openrouter/muse", {
+        pendingInterrupts: ["/root/child"],
+      }),
+    ),
+  );
+  assert.match(output, /"namespace":"collaboration"/u);
+  assert.doesNotMatch(output, /call_router_interrupt_/u);
 });
 
 test("non-stream JSON payload receives injected interrupts in output", async () => {

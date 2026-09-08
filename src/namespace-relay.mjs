@@ -14,6 +14,7 @@ import {
 import {
   buildInterruptAgentCall,
   filterAlreadyInterrupted,
+  followupTargetFromCall,
   interruptTargetFromCall,
 } from "./subagent-completion.mjs";
 
@@ -531,7 +532,11 @@ const TRACKED_STATE_FIXED_BYTES = 512;
 // a later terminal event may carry the complete response and therefore shares
 // the non-streaming JSON capture bound. Crossing either phase's bound releases
 // raw bytes before a commit and terminates the stream after one.
-const MAX_SSE_FRAME_BYTES = 256 * 1024;
+// Responses providers may echo the complete request/tool inventory in their
+// initial `response.created` event. With the full Codex/MCP surface this can
+// exceed 256 KiB before the first newline; keep a bounded but realistic cap so
+// the relay can still reach and restore later tool-call events.
+const MAX_SSE_FRAME_BYTES = 8 * 1024 * 1024;
 const MAX_COMMITTED_SSE_FRAME_BYTES = MAX_JSON_CAPTURE_BYTES;
 const LINE_FEED = 0x0a;
 const CARRIAGE_RETURN = 0x0d;
@@ -1980,6 +1985,20 @@ export function buildNamespaceLookups(namespaces) {
       bareToNamespaces.get(name).add(namespace);
     }
   }
+  // Some Desktop/MCP snapshots spell app-side tools with an extra `mcp__`
+  // prefix (`mcp__codex_app__list_threads`) even though the native namespace
+  // is `codex_app`. Keep that historical wire spelling reversible without
+  // advertising a duplicate provider definition or claiming an unrelated MCP
+  // namespace when one is explicitly present.
+  const codexAppNames = namespaces.get("codex_app");
+  if (codexAppNames) {
+    for (const name of codexAppNames) {
+      const alias = `mcp__codex_app${NAMESPACE_DELIMITER}${name}`;
+      if (!flatToNative.has(alias)) {
+        flatToNative.set(alias, { namespace: "codex_app", name });
+      }
+    }
+  }
   if (nameAliases) {
     for (const [providerName, native] of nameAliases.providerToNative) {
       flatToNative.set(providerName, native);
@@ -2133,7 +2152,7 @@ function rewriteNamespaceFunctionCallItem(
   item,
   lookups,
   sessionModel,
-  { allowIncompleteToolSearch = false } = {},
+  { allowIncompleteToolSearch = false, namespaceAliases } = {},
 ) {
   if (!item || item.type !== "function_call") return undefined;
   if (!jsonArgumentsAreUnambiguous(item.arguments, { allowEmpty: true })) return undefined;
@@ -2184,21 +2203,36 @@ function rewriteNamespaceFunctionCallItem(
     rewritten = injectSessionModelForSpawnCalls(rewritten, sessionModel);
   }
   rewritten = rewriteFunctionCallArguments(rewritten);
+  const aliasedNamespace =
+    namespaceAliases instanceof Map && typeof rewritten.namespace === "string"
+      ? namespaceAliases.get(rewritten.namespace)
+      : undefined;
+  if (aliasedNamespace && aliasedNamespace !== rewritten.namespace) {
+    rewritten = { ...rewritten, namespace: aliasedNamespace };
+  }
   return rewritten === item ? undefined : rewritten;
 }
 
-export function rewriteNamespaceFunctionCall(event, lookups, sessionModel) {
+export function rewriteNamespaceFunctionCall(
+  event,
+  lookups,
+  sessionModel,
+  namespaceAliases,
+) {
   const item = rewriteNamespaceFunctionCallItem(event?.item, lookups, sessionModel, {
     allowIncompleteToolSearch: event?.type === "response.output_item.added",
+    namespaceAliases,
   });
   return item ? { ...event, item } : undefined;
 }
 
-function rewriteOutputItems(output, lookups, sessionModel) {
+function rewriteOutputItems(output, lookups, sessionModel, namespaceAliases) {
   if (!Array.isArray(output)) return undefined;
   let changed = false;
   const rewritten = output.map((item) => {
-    const next = rewriteNamespaceFunctionCallItem(item, lookups, sessionModel);
+    const next = rewriteNamespaceFunctionCallItem(item, lookups, sessionModel, {
+      namespaceAliases,
+    });
     if (!next) return item;
     changed = true;
     return next;
@@ -2228,9 +2262,15 @@ function embeddedFunctionArgumentsAreUnambiguous(payload) {
 // array instead of SSE `item` events. Restore both shapes through the same
 // exact request-local lookup so stream mode cannot change dispatch semantics.
 // Returns a copy only when at least one call was restored.
-export function rewriteNamespaceResponsePayload(payload, lookups, sessionModel) {
+export function rewriteNamespaceResponsePayload(
+  payload,
+  lookups,
+  sessionModel,
+  namespaceAliases,
+) {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) return undefined;
-  let rewritten = rewriteNamespaceFunctionCall(payload, lookups, sessionModel) || payload;
+  let rewritten =
+    rewriteNamespaceFunctionCall(payload, lookups, sessionModel, namespaceAliases) || payload;
   let changed = rewritten !== payload;
 
   if (payload.type === "response.function_call_arguments.done") {
@@ -2245,13 +2285,84 @@ export function rewriteNamespaceResponsePayload(payload, lookups, sessionModel) 
     }
   }
 
-  const output = rewriteOutputItems(rewritten.output, lookups, sessionModel);
+  const output = rewriteOutputItems(
+    rewritten.output,
+    lookups,
+    sessionModel,
+    namespaceAliases,
+  );
   if (output) {
     rewritten = { ...rewritten, output };
     changed = true;
   }
 
-  const responseOutput = rewriteOutputItems(rewritten.response?.output, lookups, sessionModel);
+  const responseOutput = rewriteOutputItems(
+    rewritten.response?.output,
+    lookups,
+    sessionModel,
+    namespaceAliases,
+  );
+  if (responseOutput) {
+    rewritten = {
+      ...rewritten,
+      response: { ...rewritten.response, output: responseOutput },
+    };
+    changed = true;
+  }
+  return changed ? rewritten : undefined;
+}
+
+// The app-server has shipped two wire identities for its own tools over time:
+// `codex_app` in the Responses namespace and `mcp__codex_app` in the flattened
+// desktop/MCP surface. A routed provider may receive either spelling in one
+// turn; normalize the restored item to the runtime identity selected by the
+// caller before the app-server dispatches it.
+function rewriteNativeNamespaceAliases(payload, aliases) {
+  if (!(aliases instanceof Map) || !payload || typeof payload !== "object") {
+    return undefined;
+  }
+  const rewriteItem = (item) => {
+    if (
+      !item ||
+      typeof item !== "object" ||
+      item.type !== "function_call" ||
+      typeof item.namespace !== "string"
+    ) {
+      return item;
+    }
+    const namespace = aliases.get(item.namespace);
+    return namespace && namespace !== item.namespace
+      ? { ...item, namespace }
+      : item;
+  };
+  let rewritten = payload;
+  let changed = false;
+  const direct = rewriteItem(payload);
+  if (direct !== payload) {
+    rewritten = direct;
+    changed = true;
+  }
+  const item = rewriteItem(payload.item);
+  if (item !== payload.item) {
+    rewritten = { ...rewritten, item };
+    changed = true;
+  }
+  const rewriteOutput = (output) => {
+    if (!Array.isArray(output)) return undefined;
+    let outputChanged = false;
+    const next = output.map((entry) => {
+      const value = rewriteItem(entry);
+      if (value !== entry) outputChanged = true;
+      return value;
+    });
+    return outputChanged ? next : undefined;
+  };
+  const output = rewriteOutput(payload.output);
+  if (output) {
+    rewritten = { ...rewritten, output };
+    changed = true;
+  }
+  const responseOutput = rewriteOutput(payload.response?.output);
   if (responseOutput) {
     rewritten = {
       ...rewritten,
@@ -2430,7 +2541,9 @@ export class NamespaceToolCallTransform extends Transform {
   #semanticMutationCommitted = false;
   #lookups;
   #sessionModel;
+  #namespaceAliases;
   #pendingInterrupts;
+  #deferredInterruptTargets = new Set();
   #injectOnly = false;
   #interruptedTargets = new Set();
   #lastSequence = 0;
@@ -2451,6 +2564,9 @@ export class NamespaceToolCallTransform extends Transform {
     super();
     this.#lookups = buildNamespaceLookups(namespaces);
     this.#sessionModel = sessionModel;
+    this.#namespaceAliases = options.namespaceAliases instanceof Map
+      ? options.namespaceAliases
+      : undefined;
     this.#pendingInterrupts = Array.isArray(options.pendingInterrupts)
       ? [...options.pendingInterrupts]
       : [];
@@ -2575,9 +2691,13 @@ export class NamespaceToolCallTransform extends Transform {
           payload,
           this.#lookups,
           this.#sessionModel,
+          this.#namespaceAliases,
         );
         if (rewritten) payload = rewritten;
+        const aliased = rewriteNativeNamespaceAliases(payload, this.#namespaceAliases);
+        if (aliased) payload = aliased;
       }
+      this.#trackFollowupTargets(payload);
       payload = this.#injectJsonInterrupts(payload);
       // Parsing is only permission to inspect. A response the transform did
       // not semantically change retains its exact original representation.
@@ -3632,12 +3752,23 @@ export class NamespaceToolCallTransform extends Transform {
         }
       }
       if (!this.#injectOnly) {
-        const next = rewriteNamespaceResponsePayload(event, this.#lookups, this.#sessionModel);
+        const next = rewriteNamespaceResponsePayload(
+          event,
+          this.#lookups,
+          this.#sessionModel,
+          this.#namespaceAliases,
+        );
         if (next) {
           event = next;
           changed = true;
         }
+        const aliased = rewriteNativeNamespaceAliases(event, this.#namespaceAliases);
+        if (aliased) {
+          event = aliased;
+          changed = true;
+        }
       }
+      this.#trackFollowupTargets(event);
       if (sourceEvent?.type === "response.output_item.added") {
         const reason = this.#registerCall(sourceEvent.item, event.item);
         if (reason) return this.#unsafeSseFrame(frame, reason);
@@ -3710,18 +3841,40 @@ export class NamespaceToolCallTransform extends Transform {
     if (!event || typeof event !== "object") return;
     this.#lastSequence = nextSequence(event, this.#lastSequence);
     trackInterruptFromItem(event.item, this.#interruptedTargets);
+    this.#trackFollowupTargets(event);
     if (Array.isArray(event.output)) {
-      for (const item of event.output) trackInterruptFromItem(item, this.#interruptedTargets);
+      for (const item of event.output) {
+        trackInterruptFromItem(item, this.#interruptedTargets);
+        this.#trackFollowupTargets(item);
+      }
     }
     if (Array.isArray(event.response?.output)) {
       for (const item of event.response.output) {
         trackInterruptFromItem(item, this.#interruptedTargets);
+        this.#trackFollowupTargets(item);
       }
     }
   }
 
   #remainingInterrupts() {
-    return filterAlreadyInterrupted(this.#pendingInterrupts, this.#interruptedTargets);
+    return filterAlreadyInterrupted(
+      this.#pendingInterrupts,
+      new Set([...this.#interruptedTargets, ...this.#deferredInterruptTargets]),
+    );
+  }
+
+  #trackFollowupTargets(value) {
+    const candidates = [];
+    if (value && typeof value === "object") {
+      candidates.push(value);
+      candidates.push(value.item);
+      if (Array.isArray(value.output)) candidates.push(...value.output);
+      if (Array.isArray(value.response?.output)) candidates.push(...value.response.output);
+    }
+    for (const item of candidates) {
+      const target = followupTargetFromCall(item);
+      if (target) this.#deferredInterruptTargets.add(target);
+    }
   }
 
   #drainInterruptBlocks() {

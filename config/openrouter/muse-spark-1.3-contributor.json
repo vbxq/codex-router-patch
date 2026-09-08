@@ -40,6 +40,8 @@
         "image"
       ],
       "requestProfile": "auto-tool-choice",
+      "multiAgentVersion": "v2",
+      "supportsParallelToolCalls": true,
       "instructionOverlay": "persistent-agentic",
       "compHash": "openrouter-muse-spark-1-3-contributor-v3"
     }

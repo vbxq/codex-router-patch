@@ -88,7 +88,7 @@ const managedAgentMaxConcurrency = 6;
 // clicking into the child. The usage hint is injected into the root
 // developer's collaboration preamble.
 const managedSubagentCompletionHint =
-  "When a child agent finishes (FINAL_ANSWER, task_complete, or an idle/errored wait snapshot), call interrupt_agent on that child so Codex can mark it done. Do not leave finished children in the working state.";
+  "When a child agent finishes (FINAL_ANSWER, task_complete, or an idle/errored wait snapshot), call interrupt_agent on that child so Codex can mark it done. If you need a same-thread follow-up, send the follow-up first and interrupt the child only after its follow-up result. Do not leave finished children in the working state.";
 
 export function managedMultiAgentV2FeatureLine() {
   return (

@@ -1,4 +1,5 @@
 import { CODEX_APP_TOOLS, mergeCodexAppTools } from "./codex-app-tools.mjs";
+import { mergeCodexCollaborationTools } from "./codex-collaboration-tools.mjs";
 import { flattenNamespaceTools, NAMESPACE_DELIMITER } from "./namespace-relay.mjs";
 
 export const GROQ_MAX_TOOLS = 128;
@@ -226,9 +227,12 @@ const BOUNDED_TOOL_NAME_LENGTH = 64;
 export function chatProviderToolSurface(
   tools,
   providerId,
-  { input, toolChoice, maxNameLength } = {},
+  { input, toolChoice, maxNameLength, includeCollaboration = false } = {},
 ) {
-  const merged = mergeCodexAppTools(tools);
+  const appMerged = mergeCodexAppTools(tools);
+  const merged = includeCollaboration
+    ? mergeCodexCollaborationTools(appMerged.tools)
+    : appMerged;
   if (providerId !== "groq") {
     const boundedNameLength = BOUNDED_TOOL_NAME_PROVIDERS.has(providerId)
       ? BOUNDED_TOOL_NAME_LENGTH

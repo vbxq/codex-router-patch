@@ -126,6 +126,7 @@ import {
   GroqToolLimitError,
   GROQ_TOOL_LIMIT_CODE,
 } from "./chat-tool-surface.mjs";
+import { mergeCodexCollaborationTools } from "./codex-collaboration-tools.mjs";
 import { collaborationToolAvailable, pendingInterruptTargets } from "./subagent-completion.mjs";
 import {
   FAILOVER_BUDGET_MS,
@@ -3125,6 +3126,14 @@ async function buildRoutedRequest({ request, payload, route, agedInput }) {
     }
   }
   let tools = payload.tools;
+  // Some Desktop builds omit the core collaboration namespace from routed
+  // custom-model requests even though the app-server still expects v2 models
+  // to be able to call it. Add the exact native declarations before choosing
+  // the provider protocol so both Chat Completions and Responses routes share
+  // one reverse lookup and the egress transform can restore namespace calls.
+  if (route.multiAgentVersion === "v2") {
+    tools = mergeCodexCollaborationTools(tools).tools;
+  }
   // LiteLLM's Responses -> Chat Completions bridge drops namespace tools, which
   // is how the client ships the collaboration runtime, the app toolset
   // (threads, automations, navigation), and every MCP server (node_repl,
@@ -3144,12 +3153,27 @@ async function buildRoutedRequest({ request, payload, route, agedInput }) {
     const flattened = chatProviderToolSurface(tools, provider?.id, {
       input,
       toolChoice: payload.tool_choice,
+      includeCollaboration: route.multiAgentVersion === "v2",
       ...(needsOpenRouterMuseToolNameCompatibility(route)
         ? { maxNameLength: 64 }
         : {}),
     });
     namespacesFlattened = flattened.flattened;
     flattenedNamespaces = flattened.namespaces;
+    // Current Desktop app-server dispatches its thread/automation tools under
+    // the historical `mcp__codex_app` namespace. Keep the canonical snapshot
+    // (`codex_app`) for existing clients, while adding a request-local alias
+    // so both spellings survive history and egress restoration.
+    if (
+      route.provider === "openrouter" &&
+      flattenedNamespaces.has("codex_app") &&
+      !flattenedNamespaces.has("mcp__codex_app")
+    ) {
+      flattenedNamespaces.set(
+        "mcp__codex_app",
+        new Set(flattenedNamespaces.get("codex_app")),
+      );
+    }
     if (namespacesFlattened) {
       tools = flattened.tools;
     }
@@ -3333,12 +3357,18 @@ async function buildRoutedRequest({ request, payload, route, agedInput }) {
     flattenedNamespaces,
     // Close finished children the parent left Working. Only when the
     // collaboration toolset is actually available on this turn.
-    pendingInterrupts: pendingInterruptTargets(
-      needsZenFreeToolCompatibility(route) ? agedInput : input,
-      {
-        namespaces: flattenedNamespaces,
-      },
-    ),
+    // v2 collaboration models own the child lifecycle in their explicit
+    // tool sequence. Injecting an interrupt between wait_agent and a planned
+    // same-thread follow-up races the follow-up and makes a healthy child
+    // impossible to resume. Legacy/v1 parents retain the safety close.
+    pendingInterrupts: route.multiAgentVersion === "v2"
+      ? []
+      : pendingInterruptTargets(
+          needsZenFreeToolCompatibility(route) ? agedInput : input,
+          {
+            namespaces: flattenedNamespaces,
+          },
+        ),
   };
 }
 
@@ -4151,7 +4181,13 @@ async function handleResponses(request, response, requestUrl) {
             route?.slug,
             // A native stream is attached only for the injection, so it must
             // not pick up the routed-provider rewrites on the way through.
-            { pendingInterrupts, injectOnly: !route },
+            {
+              pendingInterrupts,
+              injectOnly: !route,
+              ...(route?.provider === "openrouter"
+                ? { namespaceAliases: new Map([["codex_app", "mcp__codex_app"]]) }
+                : {}),
+            },
           ),
         );
       }

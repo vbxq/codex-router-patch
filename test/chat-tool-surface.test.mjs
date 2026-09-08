@@ -6,6 +6,7 @@ import {
   GROQ_MAX_TOOLS,
   GROQ_TOOL_LIMIT_CODE,
 } from "../src/chat-tool-surface.mjs";
+import { CODEX_COLLABORATION_TOOLS } from "../src/codex-collaboration-tools.mjs";
 import { mergeCodexAppTools } from "../src/codex-app-tools.mjs";
 import {
   buildNamespaceLookups,
@@ -71,6 +72,40 @@ test("Groq defers only injected app definitions without requiring tool_search", 
   }
   assert.equal(routedNames.has("codex_app__create_thread"), false);
   assert.equal(routedNames.has("plugin_management__uninstall_plugin"), false);
+});
+
+test("v2 routed surfaces inject the collaboration namespace when the client omits it", () => {
+  const client = [
+    { type: "function", name: "exec_command" },
+    {
+      type: "namespace",
+      name: "codex_app",
+      tools: [{ type: "function", name: "read_thread_terminal" }],
+    },
+  ];
+  const routed = chatProviderToolSurface(client, "openrouter", {
+    includeCollaboration: true,
+  });
+  assert.ok(routed.tools.some((tool) => tool.name === "collaboration__spawn_agent"));
+  assert.deepEqual(
+    [...routed.namespaces.get("collaboration")].sort(),
+    CODEX_COLLABORATION_TOOLS.tools.map((tool) => tool.name).sort(),
+  );
+});
+
+test("restores the historical mcp__codex_app spelling to the native app namespace", () => {
+  const routed = chatProviderToolSurface(
+    [{ type: "namespace", name: "codex_app", tools: [{ type: "function", name: "list_threads" }] }],
+    "openrouter",
+  );
+  const restored = rewriteNamespaceResponsePayload(
+    {
+      output: [{ type: "function_call", name: "mcp__codex_app__list_threads", arguments: "{}" }],
+    },
+    buildNamespaceLookups(routed.namespaces),
+  );
+  assert.equal(restored.output[0].name, "list_threads");
+  assert.equal(restored.output[0].namespace, "codex_app");
 });
 
 test("Groq refuses an over-limit surface instead of dropping client tools", () => {

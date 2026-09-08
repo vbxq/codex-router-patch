@@ -166,7 +166,7 @@ approval_policy = "never"
     assert.doesNotMatch(configured, /^standalone_web_search\s*=/m);
     assert.match(
       configured,
-      /multi_agent_v2 = \{ enabled = true, max_concurrent_threads_per_session = 6, expose_spawn_agent_model_overrides = true, usage_hint_enabled = true, root_agent_usage_hint_text = "When a child agent finishes \(FINAL_ANSWER, task_complete, or an idle\/errored wait snapshot\), call interrupt_agent on that child so Codex can mark it done\. Do not leave finished children in the working state\." \}/,
+      /multi_agent_v2 = \{ enabled = true, max_concurrent_threads_per_session = 6, expose_spawn_agent_model_overrides = true, usage_hint_enabled = true, root_agent_usage_hint_text = "When a child agent finishes \(FINAL_ANSWER, task_complete, or an idle\/errored wait snapshot\), call interrupt_agent on that child so Codex can mark it done\. If you need a same-thread follow-up, send the follow-up first and interrupt the child only after its follow-up result\. Do not leave finished children in the working state\." \}/,
     );
     assert.doesNotMatch(configured, /codex-router-agent-concurrency-managed/);
     assert.doesNotMatch(configured, /^max_concurrent_threads_per_session\s*=/m);
@@ -428,7 +428,7 @@ test("config manager enables multi_agent_v2 and skips the legacy agents scalar w
     assert.match(enabled, /# BEGIN codex-router-multi-agent-v2-managed/);
     assert.match(
       enabled,
-      /multi_agent_v2 = \{ enabled = true, max_concurrent_threads_per_session = 6, expose_spawn_agent_model_overrides = true, usage_hint_enabled = true, root_agent_usage_hint_text = "When a child agent finishes \(FINAL_ANSWER, task_complete, or an idle\/errored wait snapshot\), call interrupt_agent on that child so Codex can mark it done\. Do not leave finished children in the working state\." \}/,
+      /multi_agent_v2 = \{ enabled = true, max_concurrent_threads_per_session = 6, expose_spawn_agent_model_overrides = true, usage_hint_enabled = true, root_agent_usage_hint_text = "When a child agent finishes \(FINAL_ANSWER, task_complete, or an idle\/errored wait snapshot\), call interrupt_agent on that child so Codex can mark it done\. If you need a same-thread follow-up, send the follow-up first and interrupt the child only after its follow-up result\. Do not leave finished children in the working state\." \}/,
     );
     assert.doesNotMatch(enabled, /codex-router-agent-concurrency-managed/);
     assert.doesNotMatch(enabled, /^max_concurrent_threads_per_session\s*=/m);

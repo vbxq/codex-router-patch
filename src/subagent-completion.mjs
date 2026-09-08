@@ -111,6 +111,30 @@ export function interruptTargetFromCall(item) {
   return typeof target === "string" && target.trim() ? target.trim() : undefined;
 }
 
+// A parent may deliberately keep a completed child alive long enough to send
+// a follow-up. The automatic closer must yield to that explicit request for
+// this response; otherwise the injected interrupt races the follow-up and the
+// child never gets a chance to answer it.
+export function followupTargetFromCall(item) {
+  if (!item || (item.type !== "function_call" && item.type !== "custom_tool_call")) {
+    return undefined;
+  }
+  const nativeName =
+    item.namespace === "collaboration" ? item.name : undefined;
+  const flatName = item.namespace === undefined ? item.name : undefined;
+  if (
+    nativeName !== "send_message" &&
+    nativeName !== "followup_task" &&
+    flatName !== "collaboration__send_message" &&
+    flatName !== "collaboration__followup_task"
+  ) {
+    return undefined;
+  }
+  const args = parseFunctionCallArgs(item);
+  const target = args?.target;
+  return typeof target === "string" && target.trim() ? target.trim() : undefined;
+}
+
 export function collaborationToolAvailable(namespaces) {
   if (!(namespaces instanceof Map)) return false;
   const names = namespaces.get("collaboration");

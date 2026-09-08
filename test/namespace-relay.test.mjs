@@ -3430,6 +3430,96 @@ test("large terminal SSE frames remain valid after a namespace rewrite", async (
   assert.equal(payloads[1].response.output[1].content[0].text.length, 320 * 1024);
 });
 
+test("large response-created inventory does not disable later namespace rewrites", async () => {
+  const { namespaces } = flattenNamespaceTools([
+    {
+      type: "namespace",
+      name: "collaboration",
+      tools: [{ type: "function", name: "spawn_agent" }],
+    },
+  ]);
+  const created = Buffer.from(
+    `data: ${JSON.stringify({
+      type: "response.created",
+      response: { id: "resp_large_created", instructions: "x".repeat(320 * 1024) },
+    })}\n\n`,
+    "utf8",
+  );
+  assert.ok(created.length > 256 * 1024);
+  const call = {
+    type: "function_call",
+    id: "fc_after_large_created",
+    call_id: "call_after_large_created",
+    name: "collaboration__spawn_agent",
+    arguments: "{}",
+  };
+  const done = Buffer.from(
+    `event: response.output_item.done\ndata: ${JSON.stringify({
+      type: "response.output_item.done",
+      item: call,
+    })}\n\n`,
+    "utf8",
+  );
+  const output = await collect(
+    Readable.from([created, done]).pipe(
+      new NamespaceToolCallTransform(namespaces, "text/event-stream"),
+    ),
+  );
+  const payload = JSON.parse(output.split("data: ")[2].split("\n", 1)[0]);
+  assert.equal(payload.item.name, "spawn_agent");
+  assert.equal(payload.item.namespace, "collaboration");
+});
+
+test("OpenRouter app-tool alias targets the live mcp__codex_app runtime", async () => {
+  const { namespaces } = flattenNamespaceTools([
+    {
+      type: "namespace",
+      name: "codex_app",
+      tools: [{ type: "function", name: "list_threads" }],
+    },
+  ]);
+  const source = Buffer.from(
+    'event: response.output_item.done\n' +
+      'data: {"type":"response.output_item.done","item":{"type":"function_call","id":"fc_app_alias","call_id":"call_app_alias","name":"codex_app__list_threads","arguments":"{}"}}\n\n',
+    "utf8",
+  );
+  const output = await collect(
+    Readable.from([source]).pipe(
+      new NamespaceToolCallTransform(namespaces, "text/event-stream", undefined, {
+        namespaceAliases: new Map([["codex_app", "mcp__codex_app"]]),
+      }),
+    ),
+  );
+  const payload = JSON.parse(output.split("data: ")[1].split("\n", 1)[0]);
+  assert.equal(payload.item.name, "list_threads");
+  assert.equal(payload.item.namespace, "mcp__codex_app");
+});
+
+test("OpenRouter app alias also rewrites an already-native codex_app item", async () => {
+  const { namespaces } = flattenNamespaceTools([
+    {
+      type: "namespace",
+      name: "codex_app",
+      tools: [{ type: "function", name: "list_threads" }],
+    },
+  ]);
+  const source = Buffer.from(
+    'event: response.output_item.done\n' +
+      'data: {"type":"response.output_item.done","item":{"type":"function_call","name":"list_threads","namespace":"codex_app","arguments":"{}"}}\n\n',
+    "utf8",
+  );
+  const output = await collect(
+    Readable.from([source]).pipe(
+      new NamespaceToolCallTransform(namespaces, "text/event-stream", undefined, {
+        namespaceAliases: new Map([["codex_app", "mcp__codex_app"]]),
+      }),
+    ),
+  );
+  const payload = JSON.parse(output.split("data: ")[1].split("\n", 1)[0]);
+  assert.equal(payload.item.name, "list_threads");
+  assert.equal(payload.item.namespace, "mcp__codex_app");
+});
+
 test("unterminated oversized SSE frames release or fail at a fixed byte bound", async () => {
   const limit = 64 * 1024;
   const marker = "unterminated-oversized-frame-must-not-leak";

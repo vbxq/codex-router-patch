@@ -289,6 +289,10 @@ test("no new route sets multiAgentVersion v2 without v2_agent/ artifact", () => 
     ...ADDITIONAL_ROUTES.map(([slug]) => slug),
   ];
   for (const slug of allNewSlugs) {
+    // Muse Spark 1.3 Contributor is the checked-in v2 route with a completed
+    // native collaboration proof; the remaining new routes stay v1 until
+    // they receive the same evidence.
+    if (slug === "openrouter/muse-spark-1.3-contributor") continue;
     const model = MODEL_BY_SLUG.get(slug);
     assert.notEqual(model.multiAgentVersion, "v2", `${slug} must not set v2 without artifact`);
   }

@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "provider": "openrouter",
+  "model": "meta/muse-spark-1.3-contributor",
+  "slug": "openrouter/muse-spark-1.3-contributor",
+  "status": "accepted",
+  "officialSources": [
+    "https://openrouter.ai/meta/muse-spark-1.3-contributor",
+    "https://openrouter.ai/docs/api-reference/overview"
+  ],
+  "testedAt": "2026-09-08T22:05:30.673Z",
+  "routerVersion": "0.5.1",
+  "checks": {
+    "streaming": {
+      "outcome": "pass",
+      "status": 200,
+      "observedAt": "2026-09-08T22:00:09.441Z"
+    },
+    "toolCall": {
+      "outcome": "pass",
+      "status": 200,
+      "observedAt": "2026-09-08T22:00:11.683Z"
+    },
+    "encryptedRelay": {
+      "outcome": "pass",
+      "status": 200,
+      "observedAt": "2026-09-08T22:04:34.690Z"
+    },
+    "markerReturn": {
+      "outcome": "pass",
+      "status": 200,
+      "observedAt": "2026-09-08T22:04:37.687Z"
+    },
+    "sameThreadFollowUp": {
+      "outcome": "pass",
+      "status": 200,
+      "observedAt": "2026-09-08T22:05:30.673Z"
+    }
+  }
+}
