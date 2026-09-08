@@ -93,6 +93,15 @@ test("v2 routed surfaces inject the collaboration namespace when the client omit
   );
 });
 
+test("collaboration lifecycle tools explain long waits and resumable partial reports", () => {
+  const byName = new Map(CODEX_COLLABORATION_TOOLS.tools.map((tool) => [tool.name, tool]));
+  assert.match(byName.get("wait_agent").description, /3600000/);
+  assert.match(byName.get("wait_agent").description, /timed_out.*not.*completion/i);
+  assert.match(byName.get("interrupt_agent").description, /PARTIAL/i);
+  assert.match(byName.get("interrupt_agent").description, /followup_task/i);
+  assert.match(byName.get("followup_task").description, /PARTIAL/i);
+});
+
 test("restores the historical mcp__codex_app spelling to the native app namespace", () => {
   const routed = chatProviderToolSurface(
     [{ type: "namespace", name: "codex_app", tools: [{ type: "function", name: "list_threads" }] }],

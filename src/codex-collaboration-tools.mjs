@@ -40,7 +40,8 @@ export const CODEX_COLLABORATION_TOOLS = {
     {
       type: "function",
       name: "wait_agent",
-      description: "Wait for a sub-agent to finish or need attention.",
+      description:
+        "Wait for a sub-agent to finish or need attention. For long work use timeout_ms=3600000. A timed_out=true result is only an observation timeout, not completion: call wait_agent again and do not interrupt the child. A PARTIAL or in-progress report also requires a follow-up or another wait.",
       inputSchema: {
         type: "object",
         properties: {
@@ -52,7 +53,8 @@ export const CODEX_COLLABORATION_TOOLS = {
     {
       type: "function",
       name: "interrupt_agent",
-      description: "Interrupt a sub-agent that has finished or is no longer needed.",
+      description:
+        "Interrupt a sub-agent only after it explicitly reports complete, or an idle/errored wait proves it cannot continue or is no longer needed. Do not interrupt a PARTIAL, in-progress, incomplete, or not-delivered report; send followup_task/send_message first and wait for that result.",
       inputSchema: {
         type: "object",
         properties: { target: { type: "string" } },
@@ -77,7 +79,8 @@ export const CODEX_COLLABORATION_TOOLS = {
     {
       type: "function",
       name: "followup_task",
-      description: "Send a follow-up task to an existing sub-agent.",
+      description:
+        "Send a follow-up task to an existing sub-agent, especially when its report is PARTIAL or in progress. Request the missing deliverables, then call wait_agent again before interrupt_agent.",
       inputSchema: {
         type: "object",
         properties: {

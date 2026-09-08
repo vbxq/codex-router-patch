@@ -75,6 +75,32 @@ test("collectFinishedSubagentState finds FINAL_ANSWER authors and skips already 
   assert.deepEqual(state.pending, ["/root/metric_tiles"]);
 });
 
+test("a PARTIAL FINAL_ANSWER stays resumable instead of being auto-closed", () => {
+  const input = [
+    finalAnswerMessage(
+      "/root/a1_implementer",
+      "Résultat A1 : PARTIAL. Le squelette est encore en cours et n'est pas livré.",
+    ),
+  ];
+  const state = collectFinishedSubagentState(input);
+  assert.equal(state.finished.size, 0);
+  assert.deepEqual(state.pending, []);
+  assert.deepEqual(pendingInterruptTargets(input), []);
+});
+
+test("a later PARTIAL report reopens a child previously reported complete", () => {
+  const input = [
+    finalAnswerMessage("/root/a1_implementer", "Configuration livrée."),
+    finalAnswerMessage(
+      "/root/a1_implementer",
+      "Résultat A1 : PARTIAL. Le panneau reste en cours et n'est pas livré.",
+    ),
+  ];
+  const state = collectFinishedSubagentState(input);
+  assert.equal(state.finished.size, 0);
+  assert.deepEqual(state.pending, []);
+});
+
 test("pendingInterruptTargets requires the collaboration interrupt tool", () => {
   const input = [finalAnswerMessage("/root/child")];
   assert.deepEqual(pendingInterruptTargets(input), ["/root/child"]);

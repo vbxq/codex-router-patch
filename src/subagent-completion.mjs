@@ -13,6 +13,21 @@ import { randomUUID } from "node:crypto";
 const FINAL_ANSWER_HEADER =
   /Message Type:\s*FINAL_ANSWER\b[\s\S]*?\nSender:\s*(\S+)/gi;
 const NATIVE_ENCRYPTED_TOKEN = /^gAAAAA[A-Za-z0-9_-]+={0,2}$/;
+// A FINAL_ANSWER envelope can also be a checkpoint from an implementer. The
+// parent must be able to resume that child, so an explicit incomplete marker
+// is not evidence that the child is ready for an interrupt. Keep this matcher
+// deliberately narrow: it looks only at the payload (not ordinary user/model
+// prose) and requires either a status word or an unambiguous delivery phrase.
+const INCOMPLETE_FINAL_STATUS =
+  /\b(?:status|statut|result|résultat|verdict)(?:\s+[^\n:]{1,40})?\s*[:=-]\s*(?:partial|in[_ -]?progress|incomplete|unfinished)\b/i;
+const INCOMPLETE_FINAL_DELIVERY =
+  /\b(?:still\s+in\s+progress|work\s+in\s+progress|not\s+(?:yet\s+)?delivered|not\s+(?:yet\s+)?complete|en\s+cours|pas\s+(?:encore\s+)?livr(?:é|e|ée|es)|non\s+livr(?:é|e|ée|es))\b/i;
+
+export function isIncompleteFinalAnswer(text) {
+  if (typeof text !== "string" || !text) return false;
+  const payload = text.match(/\nPayload:\s*([\s\S]*)$/i)?.[1] || text;
+  return INCOMPLETE_FINAL_STATUS.test(payload) || INCOMPLETE_FINAL_DELIVERY.test(payload);
+}
 
 // A close must always name a child. "/root" (and its bare and slashed forms)
 // is the parent itself, and interrupting it would cancel the turn that is
@@ -70,9 +85,8 @@ export function extractFinalAnswerTargetsFromText(text) {
   return targets;
 }
 
-function targetsFromAgentMessage(item) {
+function declaredAgentMessageTargets(item, text = itemText(item)) {
   if (item?.type !== "agent_message") return [];
-  const text = itemText(item);
   const fromText = extractFinalAnswerTargetsFromText(text);
   if (fromText.length) return fromText;
   // Structured author is enough when the envelope declares FINAL_ANSWER, even
@@ -85,6 +99,16 @@ function targetsFromAgentMessage(item) {
     return [item.author];
   }
   return [];
+}
+
+function targetsFromAgentMessage(item) {
+  if (item?.type !== "agent_message") return [];
+  const text = itemText(item);
+  // FINAL_ANSWER is a transport envelope, not a promise that the requested
+  // deliverable is complete. Leave explicit PARTIAL/in-progress checkpoints
+  // resumable; the parent can follow up and close the child after that result.
+  if (isIncompleteFinalAnswer(text)) return [];
+  return declaredAgentMessageTargets(item, text);
 }
 
 function parseFunctionCallArgs(item) {
@@ -167,6 +191,17 @@ export function collectFinishedSubagentState(input) {
       continue;
     }
     if (item.type === "agent_message") {
+      const text = itemText(item);
+      const declared = declaredAgentMessageTargets(item, text);
+      if (isIncompleteFinalAnswer(text)) {
+        // A follow-up can produce a later checkpoint for a child that had
+        // already reported a prior turn complete. The latest explicit status
+        // wins: remove it from the auto-close set so it remains resumable.
+        for (const target of declared) {
+          if (!isRootTarget(target)) finished.delete(target);
+        }
+        continue;
+      }
       for (const target of targetsFromAgentMessage(item)) {
         if (!isRootTarget(target)) finished.add(target);
       }
