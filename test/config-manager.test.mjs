@@ -166,7 +166,7 @@ approval_policy = "never"
     assert.doesNotMatch(configured, /^standalone_web_search\s*=/m);
     assert.match(
       configured,
-      /multi_agent_v2 = \{ enabled = true, max_concurrent_threads_per_session = 6, expose_spawn_agent_model_overrides = true, usage_hint_enabled = true, root_agent_usage_hint_text = "When a child agent finishes \(FINAL_ANSWER, task_complete, or an idle\/errored wait snapshot\), call interrupt_agent on that child so Codex can mark it done\. If you need a same-thread follow-up, send the follow-up first and interrupt the child only after its follow-up result\. Do not leave finished children in the working state\." \}/,
+      /multi_agent_v2 = \{ enabled = true, max_concurrent_threads_per_session = 6, expose_spawn_agent_model_overrides = true, usage_hint_enabled = true, root_agent_usage_hint_text = "After calling spawn_agent, do not end the parent turn or emit task_complete\. Call wait_agent until every spawned child has finished or needs attention, collect their reports, and continue the requested work\. Only conclude when the overall task is complete\. When a child agent finishes \(FINAL_ANSWER, task_complete, or an idle\/errored wait snapshot\), call interrupt_agent on that child so Codex can mark it done\. If you need a same-thread follow-up, send the follow-up first and interrupt the child only after its follow-up result\. Do not leave finished children in the working state\." \}/,
     );
     assert.doesNotMatch(configured, /codex-router-agent-concurrency-managed/);
     assert.doesNotMatch(configured, /^max_concurrent_threads_per_session\s*=/m);
@@ -428,7 +428,7 @@ test("config manager enables multi_agent_v2 and skips the legacy agents scalar w
     assert.match(enabled, /# BEGIN codex-router-multi-agent-v2-managed/);
     assert.match(
       enabled,
-      /multi_agent_v2 = \{ enabled = true, max_concurrent_threads_per_session = 6, expose_spawn_agent_model_overrides = true, usage_hint_enabled = true, root_agent_usage_hint_text = "When a child agent finishes \(FINAL_ANSWER, task_complete, or an idle\/errored wait snapshot\), call interrupt_agent on that child so Codex can mark it done\. If you need a same-thread follow-up, send the follow-up first and interrupt the child only after its follow-up result\. Do not leave finished children in the working state\." \}/,
+      /multi_agent_v2 = \{ enabled = true, max_concurrent_threads_per_session = 6, expose_spawn_agent_model_overrides = true, usage_hint_enabled = true, root_agent_usage_hint_text = "After calling spawn_agent, do not end the parent turn or emit task_complete\. Call wait_agent until every spawned child has finished or needs attention, collect their reports, and continue the requested work\. Only conclude when the overall task is complete\. When a child agent finishes \(FINAL_ANSWER, task_complete, or an idle\/errored wait snapshot\), call interrupt_agent on that child so Codex can mark it done\. If you need a same-thread follow-up, send the follow-up first and interrupt the child only after its follow-up result\. Do not leave finished children in the working state\." \}/,
     );
     assert.doesNotMatch(enabled, /codex-router-agent-concurrency-managed/);
     assert.doesNotMatch(enabled, /^max_concurrent_threads_per_session\s*=/m);
@@ -480,7 +480,7 @@ enabled = true
     rmSync(codexHome, { recursive: true, force: true });
   }
 });
-test("the managed multi_agent_v2 line tells the parent to interrupt finished children", () => {
+test("the managed multi_agent_v2 line keeps the parent alive and closes finished children", () => {
   const codexHome = mkdtempSync(path.join(os.tmpdir(), "codex-router-v2-hint-"));
   const configPath = path.join(codexHome, "config.toml");
   writeFileSync(configPath, `model = "gpt-5.5"\n`, { mode: 0o600 });
@@ -489,7 +489,10 @@ test("the managed multi_agent_v2 line tells the parent to interrupt finished chi
     run("enable", codexHome);
     const enabled = readFileSync(configPath, "utf8");
     assert.match(enabled, /usage_hint_enabled = true/);
-    assert.match(enabled, /root_agent_usage_hint_text = "When a child agent finishes/);
+    assert.match(enabled, /After calling spawn_agent, do not end the parent turn or emit task_complete/);
+    assert.match(enabled, /Call wait_agent until every spawned child has finished or needs attention/);
+    assert.match(enabled, /Only conclude when the overall task is complete/);
+    assert.match(enabled, /root_agent_usage_hint_text = "After calling spawn_agent/);
     assert.match(enabled, /call interrupt_agent on that child/);
   } finally {
     rmSync(codexHome, { recursive: true, force: true });
