@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 // Codex 0.147 keeps a finished child visually Working after FINAL_ANSWER while
 // the parent turn is still live. close_agent is not in the v2 toolset;
 // interrupt_agent is the only model-callable close path. Parents frequently
@@ -220,7 +222,10 @@ export function buildInterruptAgentCall(target, { callId, flattened = false } = 
   const id =
     typeof callId === "string" && callId
       ? callId
-      : `call_router_interrupt_${Math.random().toString(16).slice(2, 10)}`;
+      // Injected calls survive in the conversation history, while the relay
+      // transform is recreated for every HTTP turn. A per-turn counter would
+      // therefore reuse `call_router_interrupt_1` on the next turn.
+      : `call_router_interrupt_${randomUUID().replaceAll("-", "")}`;
   if (flattened) {
     return {
       type: "function_call",

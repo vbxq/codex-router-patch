@@ -254,6 +254,36 @@ test("stream transform injects interrupt_agent before response.completed", async
   assert.equal((output.match(/\/root\/visual_critic/g) || []).length >= 1, true);
 });
 
+test("stream interrupt ids remain unique across relay turns", async () => {
+  const namespaces = collaborationNamespaces();
+  const terminal = (sequence) =>
+    `event: response.completed\ndata: ${JSON.stringify({
+      type: "response.completed",
+      sequence_number: sequence,
+      response: { output: [] },
+    })}\n\n`;
+  const first = await collect(
+    Readable.from([terminal(1)]).pipe(
+      new NamespaceToolCallTransform(namespaces, "text/event-stream", "deepseek/deepseek-v4-flash", {
+        pendingInterrupts: ["/root/first"],
+      }),
+    ),
+  );
+  const second = await collect(
+    Readable.from([terminal(1)]).pipe(
+      new NamespaceToolCallTransform(namespaces, "text/event-stream", "deepseek/deepseek-v4-flash", {
+        pendingInterrupts: ["/root/second"],
+      }),
+    ),
+  );
+  const callId = (output) => output.match(/"call_id":"([^"]+)"/u)?.[1];
+  const firstCallId = callId(first);
+  const secondCallId = callId(second);
+  assert.match(firstCallId, /^call_router_interrupt_/u);
+  assert.match(secondCallId, /^call_router_interrupt_/u);
+  assert.notEqual(secondCallId, firstCallId);
+});
+
 test("stream transform does not re-interrupt a target the model already closed", async () => {
   const namespaces = collaborationNamespaces();
   const events = [
